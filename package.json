@@ -1,0 +1,17 @@
+{
+  "name": "brullov-synoptic",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm:dev --workspace server\" \"npm:dev --workspace client\"",
+    "build": "npm --workspace client run build",
+    "start": "npm --workspace server start",
+    "build:start": "npm run build && npm run start"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
