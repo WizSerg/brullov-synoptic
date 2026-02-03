@@ -5,7 +5,9 @@ import useImage from "use-image";
 const DEFAULT_PROJECT = {
   background: null,
   microphones: [],
-  logs: []
+  logs: [],
+  showLabels: true,
+  micSize: 32
 };
 
 const formatTimestamp = (value) => new Date(value).toLocaleString();
@@ -14,8 +16,8 @@ const logLabel = (entry) => {
   switch (entry.type) {
     case "add_mic":
       return "Added microphone";
-    case "move_mic":
-      return "Moved microphone";
+    case "delete_mic":
+      return "Deleted microphone";
     case "save":
       return "Saved project";
     case "export":
@@ -30,6 +32,43 @@ const logLabel = (entry) => {
 };
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const MIN_MIC_SIZE = 20;
+const MAX_MIC_SIZE = 64;
+const MIC_SIZE_STEP = 4;
+
+const getNextSeatNumber = (microphones) => {
+  if (!Array.isArray(microphones) || microphones.length === 0) {
+    return 1;
+  }
+  const maxSeat = microphones.reduce((max, mic) => {
+    if (typeof mic.seatNumber === "number") {
+      return Math.max(max, mic.seatNumber);
+    }
+    return max;
+  }, 0);
+  return maxSeat + 1;
+};
+
+const normalizeProject = (data) => {
+  const microphones = Array.isArray(data.microphones) ? data.microphones : [];
+  let nextSeatNumber = getNextSeatNumber(microphones);
+  const normalizedMics = microphones.map((mic) => {
+    if (typeof mic.seatNumber === "number") {
+      return mic;
+    }
+    const updated = { ...mic, seatNumber: nextSeatNumber };
+    nextSeatNumber += 1;
+    return updated;
+  });
+  return {
+    ...DEFAULT_PROJECT,
+    ...data,
+    microphones: normalizedMics,
+    showLabels: typeof data.showLabels === "boolean" ? data.showLabels : DEFAULT_PROJECT.showLabels,
+    micSize:
+      typeof data.micSize === "number" ? clamp(data.micSize, MIN_MIC_SIZE, MAX_MIC_SIZE) : DEFAULT_PROJECT.micSize
+  };
+};
 
 const App = () => {
   const [mode, setMode] = useState("edit");
@@ -37,6 +76,8 @@ const App = () => {
   const [stageSize, setStageSize] = useState({ width: 900, height: 520 });
   const containerRef = useRef(null);
   const [bgImage] = useImage(project.background?.url || "");
+  const [selectedMicId, setSelectedMicId] = useState(null);
+  const [showLogs, setShowLogs] = useState(false);
 
   const microphones = project.microphones ?? [];
 
@@ -53,7 +94,7 @@ const App = () => {
       return;
     }
     const data = await response.json();
-    setProject(data);
+    setProject(normalizeProject(data));
   };
 
   const logAction = async (type, details) => {
@@ -104,7 +145,7 @@ const App = () => {
       return;
     }
     const data = await response.json();
-    setProject(data);
+    setProject(normalizeProject(data));
     event.target.value = "";
   };
 
@@ -112,13 +153,15 @@ const App = () => {
     const newMic = {
       id: crypto.randomUUID(),
       x: 0.5,
-      y: 0.5
+      y: 0.5,
+      seatNumber: getNextSeatNumber(microphones)
     };
     setProject((prev) => ({
       ...prev,
       microphones: [...prev.microphones, newMic]
     }));
     logAction("add_mic", { id: newMic.id });
+    setSelectedMicId(newMic.id);
   };
 
   const handleSave = async () => {
@@ -127,14 +170,16 @@ const App = () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         background: project.background,
-        microphones: project.microphones
+        microphones: project.microphones,
+        showLabels: project.showLabels,
+        micSize: project.micSize
       })
     });
     if (!response.ok) {
       return;
     }
     const data = await response.json();
-    setProject(data);
+    setProject(normalizeProject(data));
   };
 
   const handleExport = async () => {
@@ -169,7 +214,7 @@ const App = () => {
       return;
     }
     const data = await response.json();
-    setProject(data);
+    setProject(normalizeProject(data));
     event.target.value = "";
   };
 
@@ -185,8 +230,33 @@ const App = () => {
       )
     }));
 
-    logAction("move_mic", { id: mic.id, x: nextX, y: nextY });
   };
+
+  const handleSelectMic = (micId) => {
+    setSelectedMicId(micId);
+  };
+
+  const handleDeleteMic = () => {
+    if (mode !== "edit") {
+      return;
+    }
+    const mic = microphones.find((item) => item.id === selectedMicId);
+    if (!mic) {
+      return;
+    }
+    const confirmed = window.confirm(`Delete microphone ${mic.seatNumber}?`);
+    if (!confirmed) {
+      return;
+    }
+    setProject((prev) => ({
+      ...prev,
+      microphones: prev.microphones.filter((item) => item.id !== mic.id)
+    }));
+    logAction("delete_mic", { id: mic.id, seatNumber: mic.seatNumber });
+    setSelectedMicId(null);
+  };
+
+  const selectedMic = microphones.find((mic) => mic.id === selectedMicId) ?? null;
 
   return (
     <div className="app">
@@ -201,6 +271,42 @@ const App = () => {
             onClick={() => setMode((prev) => (prev === "edit" ? "run" : "edit"))}
           >
             Toggle mode
+          </button>
+        </div>
+        <div className="toolbar__group">
+          <button type="button" className="button button--secondary" onClick={() => setShowLogs((prev) => !prev)}>
+            {showLogs ? "Hide logs" : "Show logs"}
+          </button>
+          <button
+            type="button"
+            className="button button--secondary"
+            onClick={() => setProject((prev) => ({ ...prev, showLabels: !prev.showLabels }))}
+          >
+            Labels: {project.showLabels ? "On" : "Off"}
+          </button>
+          <button
+            type="button"
+            className="button button--secondary"
+            onClick={() =>
+              setProject((prev) => ({
+                ...prev,
+                micSize: clamp(prev.micSize - MIC_SIZE_STEP, MIN_MIC_SIZE, MAX_MIC_SIZE)
+              }))
+            }
+          >
+            -
+          </button>
+          <button
+            type="button"
+            className="button button--secondary"
+            onClick={() =>
+              setProject((prev) => ({
+                ...prev,
+                micSize: clamp(prev.micSize + MIC_SIZE_STEP, MIN_MIC_SIZE, MAX_MIC_SIZE)
+              }))
+            }
+          >
+            +
           </button>
         </div>
         <div className="toolbar__group">
@@ -242,6 +348,8 @@ const App = () => {
                 {microphones.map((mic, index) => {
                   const absoluteX = mic.x * stageDimensions.width;
                   const absoluteY = mic.y * stageDimensions.height;
+                  const micRadius = project.micSize / 2;
+                  const isSelected = mic.id === selectedMicId;
                   return (
                     <Group
                       key={mic.id}
@@ -249,15 +357,38 @@ const App = () => {
                       y={absoluteY}
                       draggable={mode === "edit"}
                       onDragEnd={(event) => handleDragEnd(event, mic)}
+                      onClick={() => handleSelectMic(mic.id)}
+                      onTap={() => handleSelectMic(mic.id)}
                     >
-                      <Circle radius={14} fill={mode === "edit" ? "#4c6ef5" : "#868e96"} />
-                      <Text
-                        text={`Mic ${index + 1}`}
-                        offsetX={-18}
-                        offsetY={-30}
-                        fontSize={12}
-                        fill="#1f2933"
+                      <Circle
+                        radius={micRadius}
+                        fill={mode === "edit" ? "#4c6ef5" : "#868e96"}
+                        stroke={isSelected ? "#f59f00" : undefined}
+                        strokeWidth={isSelected ? 3 : 0}
                       />
+                      <Text
+                        text={`${mic.seatNumber ?? index + 1}`}
+                        x={-micRadius}
+                        y={-micRadius}
+                        width={project.micSize}
+                        height={project.micSize}
+                        align="center"
+                        verticalAlign="middle"
+                        fontSize={Math.max(12, Math.round(project.micSize * 0.6))}
+                        fontStyle="bold"
+                        fill="#ffffff"
+                      />
+                      {project.showLabels && (
+                        <Text
+                          text={`Mic ${mic.seatNumber ?? index + 1}`}
+                          x={-60}
+                          y={micRadius + 8}
+                          width={120}
+                          align="center"
+                          fontSize={12}
+                          fill="#1f2933"
+                        />
+                      )}
                     </Group>
                   );
                 })}
@@ -268,17 +399,44 @@ const App = () => {
             )}
           </div>
         </section>
-        <aside className="log-panel">
-          <h2>Activity log</h2>
-          <ul>
-            {project.logs.length === 0 && <li className="log-empty">No actions yet.</li>}
-            {project.logs.map((entry) => (
-              <li key={entry.id}>
-                <span className="log-title">{logLabel(entry)}</span>
-                <span className="log-time">{formatTimestamp(entry.timestamp)}</span>
-              </li>
-            ))}
-          </ul>
+        <aside className="side-panel">
+          <div className="properties-panel">
+            <h2>Properties</h2>
+            {!selectedMic && <p className="panel-empty">Select a microphone to view details.</p>}
+            {selectedMic && (
+              <div className="properties-panel__body">
+                <div className="property-row">
+                  <span className="property-label">Seat number</span>
+                  <span className="property-value">{selectedMic.seatNumber}</span>
+                </div>
+                <div className="property-row">
+                  <span className="property-label">Position</span>
+                  <span className="property-value">
+                    {Math.round(selectedMic.x * 100)}%, {Math.round(selectedMic.y * 100)}%
+                  </span>
+                </div>
+                {mode === "edit" && (
+                  <button type="button" className="button button--danger" onClick={handleDeleteMic}>
+                    Delete microphone
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {showLogs && (
+            <div className="log-panel">
+              <h2>Activity log</h2>
+              <ul>
+                {project.logs.length === 0 && <li className="log-empty">No actions yet.</li>}
+                {project.logs.map((entry) => (
+                  <li key={entry.id}>
+                    <span className="log-title">{logLabel(entry)}</span>
+                    <span className="log-time">{formatTimestamp(entry.timestamp)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </aside>
       </main>
     </div>
