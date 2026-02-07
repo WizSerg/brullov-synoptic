@@ -73,8 +73,11 @@ const normalizeProject = (data) => {
 const App = () => {
   const [mode, setMode] = useState("edit");
   const [project, setProject] = useState(DEFAULT_PROJECT);
+  const [dirty, setDirty] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
   const [stageSize, setStageSize] = useState({ width: 900, height: 520 });
   const containerRef = useRef(null);
+  const previousModeRef = useRef("edit");
   const [bgImage] = useImage(project.background?.url || "");
   const [selectedMicId, setSelectedMicId] = useState(null);
   const [showLogs, setShowLogs] = useState(false);
@@ -95,6 +98,14 @@ const App = () => {
     }
     const data = await response.json();
     setProject(normalizeProject(data));
+    setDirty(false);
+  };
+
+  const showToast = (message) => {
+    setToastMessage(message);
+    window.setTimeout(() => {
+      setToastMessage((current) => (current === message ? "" : current));
+    }, 3500);
   };
 
   const logAction = async (type, details) => {
@@ -145,7 +156,14 @@ const App = () => {
       return;
     }
     const data = await response.json();
-    setProject(normalizeProject(data));
+    const importedProject = normalizeProject(data);
+    setProject(importedProject);
+    setDirty(true);
+    const autosaved = await handleSave(importedProject);
+    if (!autosaved) {
+      console.error("Autosave failed after background upload");
+      showToast("Autosave failed after background upload.");
+    }
     event.target.value = "";
   };
 
@@ -160,30 +178,49 @@ const App = () => {
       ...prev,
       microphones: [...prev.microphones, newMic]
     }));
+    setDirty(true);
     logAction("add_mic", { id: newMic.id });
     setSelectedMicId(newMic.id);
   };
 
-  const handleSave = async () => {
-    const response = await fetch("/api/project", {
+  const handleSave = async (projectToSave = project) => {
+    try {
+      const response = await fetch("/api/project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          background: projectToSave.background,
+          microphones: projectToSave.microphones,
+          showLabels: projectToSave.showLabels,
+          micSize: projectToSave.micSize
+        })
+      });
+      if (!response.ok) {
+        console.error("Save request failed with status", response.status);
+        return false;
+      }
+      const data = await response.json();
+      setProject(normalizeProject(data));
+      setDirty(false);
+      return true;
+    } catch (error) {
+      console.error("Save request failed", error);
+      return false;
+    }
+  };
+
+  const handleExport = async () => {
+    const response = await fetch("/api/export", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         background: project.background,
         microphones: project.microphones,
         showLabels: project.showLabels,
-        micSize: project.micSize
+        micSize: project.micSize,
+        logs: project.logs
       })
     });
-    if (!response.ok) {
-      return;
-    }
-    const data = await response.json();
-    setProject(normalizeProject(data));
-  };
-
-  const handleExport = async () => {
-    const response = await fetch("/api/export");
     if (!response.ok) {
       return;
     }
@@ -196,7 +233,6 @@ const App = () => {
     link.click();
     link.remove();
     window.URL.revokeObjectURL(url);
-    fetchProject();
   };
 
   const handleImport = async (event) => {
@@ -214,7 +250,14 @@ const App = () => {
       return;
     }
     const data = await response.json();
-    setProject(normalizeProject(data));
+    const importedProject = normalizeProject(data);
+    setProject(importedProject);
+    setDirty(true);
+    const autosaved = await handleSave(importedProject);
+    if (!autosaved) {
+      console.error("Autosave failed after import");
+      showToast("Autosave failed after import.");
+    }
     event.target.value = "";
   };
 
@@ -229,6 +272,7 @@ const App = () => {
         item.id === mic.id ? { ...item, x: nextX, y: nextY } : item
       )
     }));
+    setDirty(true);
 
   };
 
@@ -252,9 +296,28 @@ const App = () => {
       ...prev,
       microphones: prev.microphones.filter((item) => item.id !== mic.id)
     }));
+    setDirty(true);
     logAction("delete_mic", { id: mic.id, seatNumber: mic.seatNumber });
     setSelectedMicId(null);
   };
+
+  useEffect(() => {
+    const previousMode = previousModeRef.current;
+    previousModeRef.current = mode;
+    if (previousMode !== "edit" || mode !== "run" || !dirty) {
+      return;
+    }
+
+    const autosave = async () => {
+      const autosaved = await handleSave();
+      if (!autosaved) {
+        console.error("Autosave failed while exiting edit mode");
+        showToast("Autosave failed while switching to Run mode.");
+      }
+    };
+
+    autosave();
+  }, [mode, dirty]);
 
   const selectedMic = microphones.find((mic) => mic.id === selectedMicId) ?? null;
 
@@ -265,14 +328,15 @@ const App = () => {
           <span className={`mode-badge mode-badge--${mode}`}>
             {mode === "edit" ? "Edit mode" : "Run mode"}
           </span>
-          <button
-            type="button"
-            className="button"
-            onClick={() => setMode((prev) => (prev === "edit" ? "run" : "edit"))}
-          >
-            Toggle mode
-          </button>
-        </div>
+            <button
+              type="button"
+              className="button"
+              onClick={() => setMode((prev) => (prev === "edit" ? "run" : "edit"))}
+            >
+              Toggle mode
+            </button>
+            <span className="dirty-indicator">{dirty ? "Unsaved changes" : "All changes saved"}</span>
+          </div>
         <div className="toolbar__group">
           <button type="button" className="button button--secondary" onClick={() => setShowLogs((prev) => !prev)}>
             {showLogs ? "Hide logs" : "Show logs"}
@@ -280,31 +344,36 @@ const App = () => {
           <button
             type="button"
             className="button button--secondary"
-            onClick={() => setProject((prev) => ({ ...prev, showLabels: !prev.showLabels }))}
+            onClick={() => {
+              setProject((prev) => ({ ...prev, showLabels: !prev.showLabels }));
+              setDirty(true);
+            }}
           >
             Labels: {project.showLabels ? "On" : "Off"}
           </button>
           <button
             type="button"
             className="button button--secondary"
-            onClick={() =>
+            onClick={() => {
               setProject((prev) => ({
                 ...prev,
                 micSize: clamp(prev.micSize - MIC_SIZE_STEP, MIN_MIC_SIZE, MAX_MIC_SIZE)
-              }))
-            }
+              }));
+              setDirty(true);
+            }}
           >
             -
           </button>
           <button
             type="button"
             className="button button--secondary"
-            onClick={() =>
+            onClick={() => {
               setProject((prev) => ({
                 ...prev,
                 micSize: clamp(prev.micSize + MIC_SIZE_STEP, MIN_MIC_SIZE, MAX_MIC_SIZE)
-              }))
-            }
+              }));
+              setDirty(true);
+            }}
           >
             +
           </button>
@@ -316,9 +385,6 @@ const App = () => {
           </label>
           <button type="button" className="button" onClick={handleAddMic} disabled={mode !== "edit"}>
             Add microphone
-          </button>
-          <button type="button" className="button" onClick={handleSave}>
-            Save project
           </button>
           <button type="button" className="button" onClick={handleExport}>
             Export zip
@@ -439,6 +505,7 @@ const App = () => {
           )}
         </aside>
       </main>
+      {toastMessage && <div className="toast toast--error">{toastMessage}</div>}
     </div>
   );
 };

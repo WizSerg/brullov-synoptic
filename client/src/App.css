@@ -57,6 +57,28 @@ body {
   color: #0f766e;
 }
 
+.dirty-indicator {
+  font-size: 13px;
+  color: #52606d;
+  font-weight: 600;
+}
+
+.toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  color: #ffffff;
+  font-size: 14px;
+  box-shadow: 0 8px 20px rgba(31, 41, 51, 0.2);
+  z-index: 20;
+}
+
+.toast--error {
+  background: #c92a2a;
+}
+
 .button {
   border: none;
   border-radius: 6px;
