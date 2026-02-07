@@ -115,6 +115,25 @@ const App = () => {
   }, []);
 
   useEffect(() => {
+    if (mode === "run") {
+      setSelectedMicId(null);
+    }
+  }, [mode]);
+
+  useEffect(() => {
+    if (!showLogs) {
+      return;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setShowLogs(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showLogs]);
+
+  useEffect(() => {
     const container = containerRef.current;
     if (!container) {
       return;
@@ -233,6 +252,13 @@ const App = () => {
   };
 
   const handleSelectMic = (micId) => {
+    if (mode !== "edit") {
+      const mic = microphones.find((item) => item.id === micId);
+      if (mic) {
+        console.info(`Clicked mic ${mic.seatNumber ?? "?"}`);
+      }
+      return;
+    }
     setSelectedMicId(micId);
   };
 
@@ -274,8 +300,8 @@ const App = () => {
           </button>
         </div>
         <div className="toolbar__group">
-          <button type="button" className="button button--secondary" onClick={() => setShowLogs((prev) => !prev)}>
-            {showLogs ? "Hide logs" : "Show logs"}
+          <button type="button" className="button button--secondary" onClick={() => setShowLogs(true)}>
+            Logs
           </button>
           <button
             type="button"
@@ -330,8 +356,8 @@ const App = () => {
         </div>
       </header>
       <main className="layout">
-        <section className="canvas-panel">
-          <div className="canvas-container" ref={containerRef}>
+        <section className="canvas-panel" ref={containerRef}>
+          <div className="canvas-container">
             <Stage width={stageDimensions.width} height={stageDimensions.height}>
               <Layer>
                 {bgImage ? (
@@ -349,7 +375,7 @@ const App = () => {
                   const absoluteX = mic.x * stageDimensions.width;
                   const absoluteY = mic.y * stageDimensions.height;
                   const micRadius = project.micSize / 2;
-                  const isSelected = mic.id === selectedMicId;
+                  const isSelected = mode === "edit" && mic.id === selectedMicId;
                   return (
                     <Group
                       key={mic.id}
@@ -398,34 +424,41 @@ const App = () => {
               <div className="canvas-placeholder">Upload a background image to start.</div>
             )}
           </div>
-        </section>
-        <aside className="side-panel">
-          <div className="properties-panel">
-            <h2>Properties</h2>
-            {!selectedMic && <p className="panel-empty">Select a microphone to view details.</p>}
-            {selectedMic && (
-              <div className="properties-panel__body">
-                <div className="property-row">
-                  <span className="property-label">Seat number</span>
-                  <span className="property-value">{selectedMic.seatNumber}</span>
-                </div>
-                <div className="property-row">
-                  <span className="property-label">Position</span>
-                  <span className="property-value">
-                    {Math.round(selectedMic.x * 100)}%, {Math.round(selectedMic.y * 100)}%
-                  </span>
-                </div>
-                {mode === "edit" && (
+
+          {mode === "edit" && selectedMic && (
+            <aside className="properties-overlay">
+              <div className="properties-panel">
+                <h2>Properties</h2>
+                <div className="properties-panel__body">
+                  <div className="property-row">
+                    <span className="property-label">Seat number</span>
+                    <span className="property-value">{selectedMic.seatNumber}</span>
+                  </div>
+                  <div className="property-row">
+                    <span className="property-label">Position</span>
+                    <span className="property-value">
+                      {Math.round(selectedMic.x * 100)}%, {Math.round(selectedMic.y * 100)}%
+                    </span>
+                  </div>
                   <button type="button" className="button button--danger" onClick={handleDeleteMic}>
                     Delete microphone
                   </button>
-                )}
+                </div>
               </div>
-            )}
-          </div>
-          {showLogs && (
-            <div className="log-panel">
+            </aside>
+          )}
+        </section>
+      </main>
+      {showLogs && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setShowLogs(false)}>
+          <div className="modal" role="dialog" aria-modal="true" aria-label="Activity log" onClick={(event) => event.stopPropagation()}>
+            <div className="modal__header">
               <h2>Activity log</h2>
+              <button type="button" className="button button--secondary" onClick={() => setShowLogs(false)}>
+                Close
+              </button>
+            </div>
+            <div className="log-panel">
               <ul>
                 {project.logs.length === 0 && <li className="log-empty">No actions yet.</li>}
                 {project.logs.map((entry) => (
@@ -436,9 +469,9 @@ const App = () => {
                 ))}
               </ul>
             </div>
-          )}
-        </aside>
-      </main>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
