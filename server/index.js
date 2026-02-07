@@ -25,8 +25,10 @@ const defaultProject = {
   fontSettings: {
     seatTextFamily: "system-ui",
     seatTextWeight: "bold",
+    seatTextSize: 18,
     labelFamily: "system-ui",
-    labelWeight: "normal"
+    labelWeight: "normal",
+    labelSize: 12
   }
 };
 

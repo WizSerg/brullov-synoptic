@@ -11,8 +11,10 @@ const DEFAULT_PROJECT = {
   fontSettings: {
     seatTextFamily: "system-ui",
     seatTextWeight: "bold",
+    seatTextSize: 18,
     labelFamily: "system-ui",
-    labelWeight: "normal"
+    labelWeight: "normal",
+    labelSize: 12
   }
 };
 
@@ -48,6 +50,13 @@ const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const MIN_MIC_SIZE = 20;
 const MAX_MIC_SIZE = 64;
 const MIC_SIZE_STEP = 4;
+const DEFAULT_MIC_SIZE = DEFAULT_PROJECT.micSize;
+const MIN_SEAT_TEXT_SIZE = 10;
+const MAX_SEAT_TEXT_SIZE = 64;
+const MIN_LABEL_TEXT_SIZE = 8;
+const MAX_LABEL_TEXT_SIZE = 48;
+const MIN_BASE_FONT_SIZE = 8;
+const MAX_BASE_FONT_SIZE = 72;
 
 const getNextSeatNumber = (microphones) => {
   if (!Array.isArray(microphones) || microphones.length === 0) {
@@ -105,6 +114,17 @@ const App = () => {
   const [showSettings, setShowSettings] = useState(false);
 
   const microphones = project.microphones ?? [];
+  const micSizeScale = project.micSize / DEFAULT_MIC_SIZE;
+  const computedSeatTextSize = clamp(
+    Math.round(project.fontSettings.seatTextSize * micSizeScale),
+    MIN_SEAT_TEXT_SIZE,
+    MAX_SEAT_TEXT_SIZE
+  );
+  const computedLabelTextSize = clamp(
+    Math.round(project.fontSettings.labelSize * micSizeScale),
+    MIN_LABEL_TEXT_SIZE,
+    MAX_LABEL_TEXT_SIZE
+  );
 
   const stageDimensions = useMemo(() => {
     if (!containerRef.current) {
@@ -401,6 +421,14 @@ const App = () => {
     setDirty(true);
   };
 
+  const handleFontSizeChange = (field, value) => {
+    const parsedValue = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsedValue)) {
+      return;
+    }
+    handleFontSettingChange(field, clamp(parsedValue, MIN_BASE_FONT_SIZE, MAX_BASE_FONT_SIZE));
+  };
+
   useEffect(() => {
     const previousMode = previousModeRef.current;
     previousModeRef.current = mode;
@@ -548,7 +576,7 @@ const App = () => {
                         height={project.micSize}
                         align="center"
                         verticalAlign="middle"
-                        fontSize={Math.max(12, Math.round(project.micSize * 0.6))}
+                        fontSize={computedSeatTextSize}
                         fontFamily={project.fontSettings.seatTextFamily}
                         fontStyle={project.fontSettings.seatTextWeight}
                         fill="#ffffff"
@@ -560,7 +588,7 @@ const App = () => {
                           y={micRadius + 8}
                           width={120}
                           align="center"
-                          fontSize={12}
+                          fontSize={computedLabelTextSize}
                           fontFamily={project.fontSettings.labelFamily}
                           fontStyle={project.fontSettings.labelWeight}
                           fill="#1f2933"
@@ -682,6 +710,17 @@ const App = () => {
                 </select>
               </label>
               <label className="property-field">
+                <span className="property-label">Seat text font size (base px)</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={MIN_BASE_FONT_SIZE}
+                  max={MAX_BASE_FONT_SIZE}
+                  value={project.fontSettings.seatTextSize}
+                  onChange={(event) => handleFontSizeChange("seatTextSize", event.target.value)}
+                />
+              </label>
+              <label className="property-field">
                 <span className="property-label">Mic label font</span>
                 <select
                   className="input"
@@ -705,6 +744,17 @@ const App = () => {
                   <option value="normal">Normal</option>
                   <option value="bold">Bold</option>
                 </select>
+              </label>
+              <label className="property-field">
+                <span className="property-label">Label font size (base px)</span>
+                <input
+                  className="input"
+                  type="number"
+                  min={MIN_BASE_FONT_SIZE}
+                  max={MAX_BASE_FONT_SIZE}
+                  value={project.fontSettings.labelSize}
+                  onChange={(event) => handleFontSizeChange("labelSize", event.target.value)}
+                />
               </label>
             </div>
             <div className="log-modal__actions">
