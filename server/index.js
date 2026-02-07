@@ -21,7 +21,13 @@ const defaultProject = {
   microphones: [],
   logs: [],
   showLabels: true,
-  micSize: 32
+  micSize: 32,
+  fontSettings: {
+    seatTextFamily: "system-ui",
+    seatTextWeight: "bold",
+    labelFamily: "system-ui",
+    labelWeight: "normal"
+  }
 };
 
 const ensureData = async () => {
@@ -81,7 +87,7 @@ app.get("/api/project", async (_req, res) => {
 app.post("/api/project", async (req, res) => {
   const project = await loadProject();
   const { background, microphones } = req.body || {};
-  const { showLabels, micSize } = req.body || {};
+  const { showLabels, micSize, fontSettings } = req.body || {};
   if (background !== undefined) {
     project.background = background;
   }
@@ -93,6 +99,12 @@ app.post("/api/project", async (req, res) => {
   }
   if (micSize !== undefined) {
     project.micSize = micSize;
+  }
+  if (fontSettings !== undefined) {
+    project.fontSettings = {
+      ...defaultProject.fontSettings,
+      ...fontSettings
+    };
   }
   addLog(project, "save", { microphoneCount: project.microphones.length });
   await saveProject(project);
@@ -136,6 +148,7 @@ app.post("/api/export", async (req, res) => {
     microphones: req.body?.microphones !== undefined ? req.body.microphones : project.microphones,
     showLabels: req.body?.showLabels !== undefined ? req.body.showLabels : project.showLabels,
     micSize: req.body?.micSize !== undefined ? req.body.micSize : project.micSize,
+    fontSettings: req.body?.fontSettings !== undefined ? req.body.fontSettings : project.fontSettings,
     logs: req.body?.logs !== undefined ? req.body.logs : project.logs
   };
 
@@ -189,6 +202,10 @@ app.post("/api/import", importUpload.single("file"), async (req, res) => {
   if (typeof project.micSize !== "number") {
     project.micSize = defaultProject.micSize;
   }
+  project.fontSettings = {
+    ...defaultProject.fontSettings,
+    ...(project.fontSettings || {})
+  };
 
   addLog(project, "import", { assetCount: (await fs.readdir(assetsDir)).length });
   await saveProject(project);

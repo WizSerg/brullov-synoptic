@@ -7,8 +7,21 @@ const DEFAULT_PROJECT = {
   microphones: [],
   logs: [],
   showLabels: true,
-  micSize: 32
+  micSize: 32,
+  fontSettings: {
+    seatTextFamily: "system-ui",
+    seatTextWeight: "bold",
+    labelFamily: "system-ui",
+    labelWeight: "normal"
+  }
 };
+
+const FONT_OPTIONS = [
+  { value: "system-ui", label: "System default" },
+  { value: "Arial", label: "Arial" },
+  { value: "Roboto", label: "Roboto" },
+  { value: "monospace", label: "Monospace" }
+];
 
 const formatTimestamp = (value) => new Date(value).toLocaleString();
 
@@ -53,12 +66,16 @@ const normalizeProject = (data) => {
   const microphones = Array.isArray(data.microphones) ? data.microphones : [];
   let nextSeatNumber = getNextSeatNumber(microphones);
   const normalizedMics = microphones.map((mic) => {
-    if (typeof mic.seatNumber === "number") {
-      return mic;
+    const seatNumber = typeof mic.seatNumber === "number" ? mic.seatNumber : nextSeatNumber;
+    if (typeof mic.seatNumber !== "number") {
+      nextSeatNumber += 1;
     }
-    const updated = { ...mic, seatNumber: nextSeatNumber };
-    nextSeatNumber += 1;
-    return updated;
+    return {
+      ...mic,
+      seatNumber,
+      seatText: typeof mic.seatText === "string" ? mic.seatText : `${seatNumber}`,
+      label: typeof mic.label === "string" ? mic.label : ""
+    };
   });
   return {
     ...DEFAULT_PROJECT,
@@ -66,7 +83,11 @@ const normalizeProject = (data) => {
     microphones: normalizedMics,
     showLabels: typeof data.showLabels === "boolean" ? data.showLabels : DEFAULT_PROJECT.showLabels,
     micSize:
-      typeof data.micSize === "number" ? clamp(data.micSize, MIN_MIC_SIZE, MAX_MIC_SIZE) : DEFAULT_PROJECT.micSize
+      typeof data.micSize === "number" ? clamp(data.micSize, MIN_MIC_SIZE, MAX_MIC_SIZE) : DEFAULT_PROJECT.micSize,
+    fontSettings: {
+      ...DEFAULT_PROJECT.fontSettings,
+      ...(data.fontSettings || {})
+    }
   };
 };
 
@@ -81,6 +102,7 @@ const App = () => {
   const [bgImage] = useImage(project.background?.url || "");
   const [selectedMicId, setSelectedMicId] = useState(null);
   const [showLogs, setShowLogs] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   const microphones = project.microphones ?? [];
 
@@ -156,6 +178,21 @@ const App = () => {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [showLogs]);
 
+  useEffect(() => {
+    if (!showSettings) {
+      return;
+    }
+
+    const handleEscape = (event) => {
+      if (event.key === "Escape") {
+        setShowSettings(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [showSettings]);
+
   const handleBackgroundUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) {
@@ -189,6 +226,8 @@ const App = () => {
       y: 0.5,
       seatNumber: getNextSeatNumber(microphones)
     };
+    newMic.seatText = `${newMic.seatNumber}`;
+    newMic.label = "";
     setProject((prev) => ({
       ...prev,
       microphones: [...prev.microphones, newMic]
@@ -207,7 +246,8 @@ const App = () => {
           background: projectToSave.background,
           microphones: projectToSave.microphones,
           showLabels: projectToSave.showLabels,
-          micSize: projectToSave.micSize
+          micSize: projectToSave.micSize,
+          fontSettings: projectToSave.fontSettings
         })
       });
       if (!response.ok) {
@@ -233,6 +273,7 @@ const App = () => {
         microphones: project.microphones,
         showLabels: project.showLabels,
         micSize: project.micSize,
+        fontSettings: project.fontSettings,
         logs: project.logs
       })
     });
@@ -320,6 +361,46 @@ const App = () => {
     setSelectedMicId(null);
   };
 
+  const handleSelectedMicChange = (field, value) => {
+    if (!selectedMicId) {
+      return;
+    }
+    setProject((prev) => ({
+      ...prev,
+      microphones: prev.microphones.map((item) => (item.id === selectedMicId ? { ...item, [field]: value } : item))
+    }));
+    setDirty(true);
+  };
+
+  const handleAutoRenumber = () => {
+    let fallbackSeat = 1;
+    setProject((prev) => ({
+      ...prev,
+      microphones: prev.microphones.map((mic) => {
+        const numericSeat = Number.parseInt(`${mic.seatText ?? ""}`.trim(), 10);
+        if (Number.isFinite(numericSeat) && numericSeat > 0) {
+          fallbackSeat = Math.max(fallbackSeat, numericSeat + 1);
+          return { ...mic, seatNumber: numericSeat };
+        }
+        const updated = { ...mic, seatNumber: fallbackSeat };
+        fallbackSeat += 1;
+        return updated;
+      })
+    }));
+    setDirty(true);
+  };
+
+  const handleFontSettingChange = (field, value) => {
+    setProject((prev) => ({
+      ...prev,
+      fontSettings: {
+        ...prev.fontSettings,
+        [field]: value
+      }
+    }));
+    setDirty(true);
+  };
+
   useEffect(() => {
     const previousMode = previousModeRef.current;
     previousModeRef.current = mode;
@@ -364,6 +445,9 @@ const App = () => {
         <div className="toolbar__group">
           <button type="button" className="button button--secondary" onClick={() => setShowLogs(true)}>
             Logs
+          </button>
+          <button type="button" className="button button--secondary" onClick={() => setShowSettings(true)}>
+            Settings
           </button>
           <button
             type="button"
@@ -457,7 +541,7 @@ const App = () => {
                         strokeWidth={isSelected ? 3 : 0}
                       />
                       <Text
-                        text={`${mic.seatNumber ?? index + 1}`}
+                        text={mic.seatText || `${mic.seatNumber ?? index + 1}`}
                         x={-micRadius}
                         y={-micRadius}
                         width={project.micSize}
@@ -465,17 +549,20 @@ const App = () => {
                         align="center"
                         verticalAlign="middle"
                         fontSize={Math.max(12, Math.round(project.micSize * 0.6))}
-                        fontStyle="bold"
+                        fontFamily={project.fontSettings.seatTextFamily}
+                        fontStyle={project.fontSettings.seatTextWeight}
                         fill="#ffffff"
                       />
-                      {project.showLabels && (
+                      {project.showLabels && mic.label && (
                         <Text
-                          text={`Mic ${mic.seatNumber ?? index + 1}`}
+                          text={mic.label}
                           x={-60}
                           y={micRadius + 8}
                           width={120}
                           align="center"
                           fontSize={12}
+                          fontFamily={project.fontSettings.labelFamily}
+                          fontStyle={project.fontSettings.labelWeight}
                           fill="#1f2933"
                         />
                       )}
@@ -494,12 +581,35 @@ const App = () => {
                   <span className="property-label">Seat number</span>
                   <span className="property-value">{selectedMic.seatNumber}</span>
                 </div>
+                <label className="property-field">
+                  <span className="property-label">Seat text</span>
+                  <input
+                    className="input"
+                    type="text"
+                    value={selectedMic.seatText ?? ""}
+                    onChange={(event) => handleSelectedMicChange("seatText", event.target.value)}
+                    placeholder="e.g. 1, CHAIRMAN"
+                  />
+                </label>
+                <label className="property-field">
+                  <span className="property-label">Label</span>
+                  <input
+                    className="input"
+                    type="text"
+                    value={selectedMic.label ?? ""}
+                    onChange={(event) => handleSelectedMicChange("label", event.target.value)}
+                    placeholder="Shown when Labels are On"
+                  />
+                </label>
                 <div className="property-row">
                   <span className="property-label">Position</span>
                   <span className="property-value">
                     {Math.round(selectedMic.x * 100)}%, {Math.round(selectedMic.y * 100)}%
                   </span>
                 </div>
+                <button type="button" className="button button--secondary" onClick={handleAutoRenumber}>
+                  Auto renumber
+                </button>
                 <button type="button" className="button button--danger" onClick={handleDeleteMic}>
                   Delete microphone
                 </button>
@@ -529,6 +639,76 @@ const App = () => {
             </ul>
             <div className="log-modal__actions">
               <button type="button" className="button button--secondary" onClick={() => setShowLogs(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showSettings && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setShowSettings(false)}>
+          <div
+            className="settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Font settings"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>Settings</h2>
+            <div className="settings-grid">
+              <label className="property-field">
+                <span className="property-label">Mic seat text font</span>
+                <select
+                  className="input"
+                  value={project.fontSettings.seatTextFamily}
+                  onChange={(event) => handleFontSettingChange("seatTextFamily", event.target.value)}
+                >
+                  {FONT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="property-field">
+                <span className="property-label">Mic seat text weight</span>
+                <select
+                  className="input"
+                  value={project.fontSettings.seatTextWeight}
+                  onChange={(event) => handleFontSettingChange("seatTextWeight", event.target.value)}
+                >
+                  <option value="normal">Normal</option>
+                  <option value="bold">Bold</option>
+                </select>
+              </label>
+              <label className="property-field">
+                <span className="property-label">Mic label font</span>
+                <select
+                  className="input"
+                  value={project.fontSettings.labelFamily}
+                  onChange={(event) => handleFontSettingChange("labelFamily", event.target.value)}
+                >
+                  {FONT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="property-field">
+                <span className="property-label">Mic label weight</span>
+                <select
+                  className="input"
+                  value={project.fontSettings.labelWeight}
+                  onChange={(event) => handleFontSettingChange("labelWeight", event.target.value)}
+                >
+                  <option value="normal">Normal</option>
+                  <option value="bold">Bold</option>
+                </select>
+              </label>
+            </div>
+            <div className="log-modal__actions">
+              <button type="button" className="button button--secondary" onClick={() => setShowSettings(false)}>
                 Close
               </button>
             </div>
