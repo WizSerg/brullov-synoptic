@@ -62,10 +62,23 @@ const getNextSeatNumber = (microphones) => {
   return maxSeat + 1;
 };
 
+const getNextMicId = (microphones) => {
+  if (!Array.isArray(microphones) || microphones.length === 0) {
+    return 1;
+  }
+  const maxMicId = microphones.reduce((max, mic) => {
+    if (typeof mic.micId === "number") {
+      return Math.max(max, mic.micId);
+    }
+    return max;
+  }, 0);
+  return maxMicId + 1;
+};
+
 const normalizeProject = (data) => {
   const microphones = Array.isArray(data.microphones) ? data.microphones : [];
   let nextSeatNumber = getNextSeatNumber(microphones);
-  const normalizedMics = microphones.map((mic) => {
+  const normalizedMics = microphones.map((mic, index) => {
     const seatNumber = typeof mic.seatNumber === "number" ? mic.seatNumber : nextSeatNumber;
     if (typeof mic.seatNumber !== "number") {
       nextSeatNumber += 1;
@@ -73,6 +86,8 @@ const normalizeProject = (data) => {
     return {
       ...mic,
       seatNumber,
+      micId: typeof mic.micId === "number" ? mic.micId : index + 1,
+      isOn: typeof mic.isOn === "boolean" ? mic.isOn : false,
       seatText: typeof mic.seatText === "string" ? mic.seatText : `${seatNumber}`,
       label: typeof mic.label === "string" ? mic.label : ""
     };
@@ -103,6 +118,7 @@ const App = () => {
   const [selectedMicId, setSelectedMicId] = useState(null);
   const [showLogs, setShowLogs] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [micIdError, setMicIdError] = useState("");
 
   const microphones = project.microphones ?? [];
 
@@ -145,6 +161,34 @@ const App = () => {
 
   useEffect(() => {
     fetchProject();
+  }, []);
+
+  useEffect(() => {
+    const source = new EventSource("/api/events");
+
+    source.onmessage = (event) => {
+      if (!event.data) {
+        return;
+      }
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.type !== "MIC_STATE") {
+          return;
+        }
+        setProject((prev) =>
+          normalizeProject({
+            ...prev,
+            microphones: prev.microphones.map((mic) =>
+              mic.micId === payload.micId ? { ...mic, isOn: payload.isOn } : mic
+            )
+          })
+        );
+      } catch (_error) {
+        // ignore malformed events
+      }
+    };
+
+    return () => source.close();
   }, []);
 
   useEffect(() => {
@@ -219,12 +263,26 @@ const App = () => {
     event.target.value = "";
   };
 
+  const toggleMicById = async (micId) => {
+    const response = await fetch(`/api/microphones/${micId}/toggle`, {
+      method: "POST"
+    });
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    setProject(normalizeProject(data));
+    setDirty(false);
+  };
+
   const handleAddMic = () => {
     const newMic = {
       id: crypto.randomUUID(),
       x: 0.5,
       y: 0.5,
-      seatNumber: getNextSeatNumber(microphones)
+      seatNumber: getNextSeatNumber(microphones),
+      micId: getNextMicId(microphones),
+      isOn: false
     };
     newMic.seatText = `${newMic.seatNumber}`;
     newMic.label = "";
@@ -331,13 +389,14 @@ const App = () => {
     setDirty(true);
   };
 
-  const handleMicClick = (micId, seatNumber) => {
+  const handleMicClick = async (mic) => {
     if (mode !== "edit") {
-      console.info(`Clicked mic ${seatNumber}`);
+      await toggleMicById(mic.micId);
       return;
     }
 
-    setSelectedMicId(micId);
+    setSelectedMicId(mic.id);
+    setMicIdError("");
   };
 
   const handleDeleteMic = () => {
@@ -365,6 +424,27 @@ const App = () => {
     if (!selectedMicId) {
       return;
     }
+
+    if (field === "micId") {
+      const parsed = Number.parseInt(`${value}`.trim(), 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        setMicIdError("micId must be a positive integer.");
+        return;
+      }
+      const duplicate = microphones.some((item) => item.id !== selectedMicId && item.micId === parsed);
+      if (duplicate) {
+        setMicIdError("micId must be unique.");
+        return;
+      }
+      setMicIdError("");
+      setProject((prev) => ({
+        ...prev,
+        microphones: prev.microphones.map((item) => (item.id === selectedMicId ? { ...item, micId: parsed } : item))
+      }));
+      setDirty(true);
+      return;
+    }
+
     setProject((prev) => ({
       ...prev,
       microphones: prev.microphones.map((item) => (item.id === selectedMicId ? { ...item, [field]: value } : item))
@@ -422,6 +502,7 @@ const App = () => {
   useEffect(() => {
     if (mode === "run") {
       setSelectedMicId(null);
+      setMicIdError("");
     }
   }, [mode]);
 
@@ -519,7 +600,7 @@ const App = () => {
                     dash={[6, 4]}
                   />
                 )}
-                {microphones.map((mic, index) => {
+                {microphones.map((mic) => {
                   const absoluteX = mic.x * stageDimensions.width;
                   const absoluteY = mic.y * stageDimensions.height;
                   const micRadius = project.micSize / 2;
@@ -531,17 +612,17 @@ const App = () => {
                       y={absoluteY}
                       draggable={mode === "edit"}
                       onDragEnd={(event) => handleDragEnd(event, mic)}
-                      onClick={() => handleMicClick(mic.id, mic.seatNumber ?? index + 1)}
-                      onTap={() => handleMicClick(mic.id, mic.seatNumber ?? index + 1)}
+                      onClick={() => handleMicClick(mic)}
+                      onTap={() => handleMicClick(mic)}
                     >
                       <Circle
                         radius={micRadius}
-                        fill={mode === "edit" ? "#4c6ef5" : "#868e96"}
+                        fill={mic.isOn ? "#37b24d" : mode === "edit" ? "#4c6ef5" : "#868e96"}
                         stroke={isSelected ? "#f59f00" : undefined}
                         strokeWidth={isSelected ? 3 : 0}
                       />
                       <Text
-                        text={mic.seatText || `${mic.seatNumber ?? index + 1}`}
+                        text={mic.seatText || `${mic.seatNumber ?? mic.micId}`}
                         x={-micRadius}
                         y={-micRadius}
                         width={project.micSize}
@@ -581,6 +662,18 @@ const App = () => {
                   <span className="property-label">Seat number</span>
                   <span className="property-value">{selectedMic.seatNumber}</span>
                 </div>
+                <label className="property-field">
+                  <span className="property-label">micId (TCP integration)</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={selectedMic.micId ?? ""}
+                    onChange={(event) => handleSelectedMicChange("micId", event.target.value)}
+                  />
+                  {micIdError && <span className="field-error">{micIdError}</span>}
+                </label>
                 <label className="property-field">
                   <span className="property-label">Seat text</span>
                   <input

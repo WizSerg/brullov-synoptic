@@ -16,6 +16,7 @@ npm run dev
 
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:3001
+- TCP integration server: `localhost:15000`
 
 ### Production build + run
 
@@ -31,30 +32,94 @@ Then open http://localhost:3001 (the server serves the built UI).
 - Add microphone widgets on top of the background.
 - Drag microphones in **Edit mode** only (Run mode disables dragging).
 - Microphones display stable seat numbers and optional labels.
-- Toggle label visibility, mic size, and activity log from the toolbar.
-- Delete microphones from the Properties panel (Edit mode only).
-- Microphone positions are stored as **relative coordinates** (0..1).
+- Each microphone has external integration fields:
+  - `micId` (unique integer)
+  - virtual state `isOn` (`ON` / `OFF`)
+- In **Run mode**, clicking a microphone toggles its virtual ON/OFF state.
+- In **Edit mode**, clicking selects microphone properties and does not toggle ON/OFF.
 - Save/load the project locally (filesystem JSON + assets).
 - Export the project as a zip (`project.json` + assets) and import it back.
-- Log actions (add/delete mic, save, import/export, background upload).
 
-## Acceptance criteria mapping
+## TCP protocol: `SYNOPTIC/1.0`
 
-| Requirement | Implementation |
-| --- | --- |
-| One screen: Synoptic Scheme | Single page React UI (`Synoptic Scheme`). |
-| Two modes: Edit / Run | Mode toggle in the toolbar; drag enabled only in Edit. |
-| Upload background | "Upload background" button uploads PNG/JPG to server assets. |
-| Add microphone widgets | "Add microphone" button adds a mic to the canvas. |
-| Drag microphones in Edit mode only | Konva drag enabled only when mode is Edit. |
-| Relative coordinates | Stored as `x`, `y` in range 0..1 in `project.json`. |
-| Save/load locally | Express server stores `server/data/project.json` + assets. |
-| Export/import zip | Export endpoint streams zip; import uploads zip and restores files. |
-| Log actions | Activity log panel shows actions from server log. |
+Transport:
+
+- TCP server on fixed port `15000`
+- Line-based ASCII protocol
+- Accepts both `\n` and `\r\n`
+- No authentication (trusted isolated network)
+
+On connect, server sends exactly one line:
+
+```text
+SYNOPTIC/1.0
+```
+
+### Server -> client events (broadcast to all clients)
+
+```text
+EVENT MIC <id> ON
+EVENT MIC <id> OFF
+EVENT MIC <id> NOT_FOUND
+EVENT CONNECTED
+EVENT DISCONNECTED
+EVENT NOT_CONNECTED
+```
+
+`seatText` and `label` are UI-only and are never used by TCP protocol. TCP always uses `micId`.
+
+### Client -> server command (v1)
+
+```text
+SET MIC <id> TOGGLE
+```
+
+Behavior:
+
+- Existing `micId`: toggles state and broadcasts `EVENT MIC <id> ON|OFF`
+- Unknown `micId`: broadcasts `EVENT MIC <id> NOT_FOUND`
+- No `OK/ERR` responses are sent
+
+## PuTTY manual test
+
+1. Start app (`npm run dev` or production mode).
+2. Open PuTTY, choose **Raw** TCP, host `127.0.0.1`, port `15000`.
+3. On connect, expect:
+
+   ```text
+   SYNOPTIC/1.0
+   ```
+
+4. Send:
+
+   ```text
+   SET MIC 1 TOGGLE
+   ```
+
+5. Expect one of:
+
+   ```text
+   EVENT MIC 1 ON
+   EVENT MIC 1 OFF
+   ```
+
+6. Send unknown id, for example:
+
+   ```text
+   SET MIC 999 TOGGLE
+   ```
+
+7. Expect:
+
+   ```text
+   EVENT MIC 999 NOT_FOUND
+   ```
+
+Also note: clicking microphones in **Run mode** produces the same ON/OFF events.
 
 ## Project structure
 
-```
+```text
 .
 ├── client/          # React + Vite frontend
 ├── server/          # Node.js + Express backend
@@ -64,4 +129,4 @@ Then open http://localhost:3001 (the server serves the built UI).
 ## Notes
 
 - Stored project data lives in `server/data/` (created on first run).
-- This MVP does **not** control hardware; it only provides the UI and storage.
+- This MVP does **not** control hardware; it only provides UI, storage, and integration protocol.

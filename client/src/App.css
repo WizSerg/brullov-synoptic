@@ -313,3 +313,8 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+.field-error {
+  color: #c92a2a;
+  font-size: 12px;
+}
