@@ -141,6 +141,21 @@ const App = () => {
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => {
+    if (!showLogs) {
+      return;
+    }
+
+    const handleEscape = (event) => {
+      if (event.key === "Escape") {
+        setShowLogs(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [showLogs]);
+
   const handleBackgroundUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) {
@@ -273,10 +288,14 @@ const App = () => {
       )
     }));
     setDirty(true);
-
   };
 
-  const handleSelectMic = (micId) => {
+  const handleMicClick = (micId, seatNumber) => {
+    if (mode !== "edit") {
+      console.info(`Clicked mic ${seatNumber}`);
+      return;
+    }
+
     setSelectedMicId(micId);
   };
 
@@ -319,27 +338,32 @@ const App = () => {
     autosave();
   }, [mode, dirty]);
 
+  useEffect(() => {
+    if (mode === "run") {
+      setSelectedMicId(null);
+    }
+  }, [mode]);
+
   const selectedMic = microphones.find((mic) => mic.id === selectedMicId) ?? null;
+  const showPropertiesOverlay = mode === "edit" && Boolean(selectedMic);
 
   return (
     <div className="app">
       <header className="toolbar">
         <div className="toolbar__group">
-          <span className={`mode-badge mode-badge--${mode}`}>
-            {mode === "edit" ? "Edit mode" : "Run mode"}
-          </span>
-            <button
-              type="button"
-              className="button"
-              onClick={() => setMode((prev) => (prev === "edit" ? "run" : "edit"))}
-            >
-              Toggle mode
-            </button>
-            <span className="dirty-indicator">{dirty ? "Unsaved changes" : "All changes saved"}</span>
-          </div>
+          <span className={`mode-badge mode-badge--${mode}`}>{mode === "edit" ? "Edit mode" : "Run mode"}</span>
+          <button
+            type="button"
+            className="button"
+            onClick={() => setMode((prev) => (prev === "edit" ? "run" : "edit"))}
+          >
+            Toggle mode
+          </button>
+          <span className="dirty-indicator">{dirty ? "Unsaved changes" : "All changes saved"}</span>
+        </div>
         <div className="toolbar__group">
-          <button type="button" className="button button--secondary" onClick={() => setShowLogs((prev) => !prev)}>
-            {showLogs ? "Hide logs" : "Show logs"}
+          <button type="button" className="button button--secondary" onClick={() => setShowLogs(true)}>
+            Logs
           </button>
           <button
             type="button"
@@ -415,7 +439,7 @@ const App = () => {
                   const absoluteX = mic.x * stageDimensions.width;
                   const absoluteY = mic.y * stageDimensions.height;
                   const micRadius = project.micSize / 2;
-                  const isSelected = mic.id === selectedMicId;
+                  const isSelected = mode === "edit" && mic.id === selectedMicId;
                   return (
                     <Group
                       key={mic.id}
@@ -423,8 +447,8 @@ const App = () => {
                       y={absoluteY}
                       draggable={mode === "edit"}
                       onDragEnd={(event) => handleDragEnd(event, mic)}
-                      onClick={() => handleSelectMic(mic.id)}
-                      onTap={() => handleSelectMic(mic.id)}
+                      onClick={() => handleMicClick(mic.id, mic.seatNumber ?? index + 1)}
+                      onTap={() => handleMicClick(mic.id, mic.seatNumber ?? index + 1)}
                     >
                       <Circle
                         radius={micRadius}
@@ -460,16 +484,11 @@ const App = () => {
                 })}
               </Layer>
             </Stage>
-            {!project.background && (
-              <div className="canvas-placeholder">Upload a background image to start.</div>
-            )}
+            {!project.background && <div className="canvas-placeholder">Upload a background image to start.</div>}
           </div>
-        </section>
-        <aside className="side-panel">
-          <div className="properties-panel">
-            <h2>Properties</h2>
-            {!selectedMic && <p className="panel-empty">Select a microphone to view details.</p>}
-            {selectedMic && (
+          {showPropertiesOverlay && (
+            <aside className="properties-panel properties-panel--overlay">
+              <h2>Properties</h2>
               <div className="properties-panel__body">
                 <div className="property-row">
                   <span className="property-label">Seat number</span>
@@ -481,30 +500,41 @@ const App = () => {
                     {Math.round(selectedMic.x * 100)}%, {Math.round(selectedMic.y * 100)}%
                   </span>
                 </div>
-                {mode === "edit" && (
-                  <button type="button" className="button button--danger" onClick={handleDeleteMic}>
-                    Delete microphone
-                  </button>
-                )}
+                <button type="button" className="button button--danger" onClick={handleDeleteMic}>
+                  Delete microphone
+                </button>
               </div>
-            )}
-          </div>
-          {showLogs && (
-            <div className="log-panel">
-              <h2>Activity log</h2>
-              <ul>
-                {project.logs.length === 0 && <li className="log-empty">No actions yet.</li>}
-                {project.logs.map((entry) => (
-                  <li key={entry.id}>
-                    <span className="log-title">{logLabel(entry)}</span>
-                    <span className="log-time">{formatTimestamp(entry.timestamp)}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            </aside>
           )}
-        </aside>
+        </section>
       </main>
+      {showLogs && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setShowLogs(false)}>
+          <div
+            className="log-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Activity log"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>Activity log</h2>
+            <ul>
+              {project.logs.length === 0 && <li className="log-empty">No actions yet.</li>}
+              {project.logs.map((entry) => (
+                <li key={entry.id}>
+                  <span className="log-title">{logLabel(entry)}</span>
+                  <span className="log-time">{formatTimestamp(entry.timestamp)}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="log-modal__actions">
+              <button type="button" className="button button--secondary" onClick={() => setShowLogs(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {toastMessage && <div className="toast toast--error">{toastMessage}</div>}
     </div>
   );
