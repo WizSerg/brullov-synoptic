@@ -30,10 +30,13 @@ Then open http://localhost:3001 (the server serves the built UI).
 - Upload a background image (PNG/JPG) and display it on the canvas.
 - Add microphone widgets on top of the background.
 - Drag microphones in **Edit mode** only (Run mode disables dragging).
+- Microphones display stable seat numbers and optional labels.
+- Toggle label visibility, mic size, and activity log from the toolbar.
+- Delete microphones from the Properties panel (Edit mode only).
 - Microphone positions are stored as **relative coordinates** (0..1).
 - Save/load the project locally (filesystem JSON + assets).
 - Export the project as a zip (`project.json` + assets) and import it back.
-- Log actions (add mic, move mic, save, import/export, background upload).
+- Log actions (add/delete mic, save, import/export, background upload).
 
 ## Acceptance criteria mapping
 

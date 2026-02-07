@@ -19,7 +19,9 @@ const projectPath = path.join(dataDir, "project.json");
 const defaultProject = {
   background: null,
   microphones: [],
-  logs: []
+  logs: [],
+  showLabels: true,
+  micSize: 32
 };
 
 const ensureData = async () => {
@@ -79,11 +81,18 @@ app.get("/api/project", async (_req, res) => {
 app.post("/api/project", async (req, res) => {
   const project = await loadProject();
   const { background, microphones } = req.body || {};
+  const { showLabels, micSize } = req.body || {};
   if (background !== undefined) {
     project.background = background;
   }
   if (microphones !== undefined) {
     project.microphones = microphones;
+  }
+  if (showLabels !== undefined) {
+    project.showLabels = showLabels;
+  }
+  if (micSize !== undefined) {
+    project.micSize = micSize;
   }
   addLog(project, "save", { microphoneCount: project.microphones.length });
   await saveProject(project);
@@ -165,6 +174,12 @@ app.post("/api/import", importUpload.single("file"), async (req, res) => {
 
   if (!Array.isArray(project.logs)) {
     project.logs = [];
+  }
+  if (typeof project.showLabels !== "boolean") {
+    project.showLabels = defaultProject.showLabels;
+  }
+  if (typeof project.micSize !== "number") {
+    project.micSize = defaultProject.micSize;
   }
 
   addLog(project, "import", { assetCount: (await fs.readdir(assetsDir)).length });

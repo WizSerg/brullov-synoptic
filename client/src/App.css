@@ -86,6 +86,11 @@ body {
   border: 1px solid #e2e8f0;
 }
 
+.button--danger {
+  background: #e03131;
+  color: #ffffff;
+}
+
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 2.2fr) minmax(240px, 1fr);
@@ -123,6 +128,13 @@ body {
   pointer-events: none;
 }
 
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.properties-panel,
 .log-panel {
   background: #ffffff;
   border-radius: 12px;
@@ -132,9 +144,37 @@ body {
   flex-direction: column;
 }
 
+.properties-panel h2,
 .log-panel h2 {
   font-size: 18px;
   margin: 0 0 12px;
+}
+
+.panel-empty {
+  margin: 0;
+  color: #7b8794;
+  font-size: 14px;
+}
+
+.properties-panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.property-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.property-label {
+  color: #7b8794;
+}
+
+.property-value {
+  font-weight: 600;
 }
 
 .log-panel ul {
