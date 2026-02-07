@@ -127,21 +127,29 @@ app.post("/api/background", backgroundUpload.single("file"), async (req, res) =>
   res.json(project);
 });
 
-app.get("/api/export", async (_req, res) => {
+app.post("/api/export", async (req, res) => {
   const project = await loadProject();
+  const exportProject = {
+    ...project,
+    ...(req.body || {}),
+    background: req.body?.background !== undefined ? req.body.background : project.background,
+    microphones: req.body?.microphones !== undefined ? req.body.microphones : project.microphones,
+    showLabels: req.body?.showLabels !== undefined ? req.body.showLabels : project.showLabels,
+    micSize: req.body?.micSize !== undefined ? req.body.micSize : project.micSize,
+    logs: req.body?.logs !== undefined ? req.body.logs : project.logs
+  };
+
   res.attachment("project.zip");
   const archive = archiver("zip", { zlib: { level: 9 } });
   archive.on("error", (err) => {
     res.status(500).json({ error: err.message });
   });
   archive.pipe(res);
-  archive.append(JSON.stringify(project, null, 2), { name: "project.json" });
+  archive.append(JSON.stringify(exportProject, null, 2), { name: "project.json" });
   if (await fs.pathExists(assetsDir)) {
     archive.directory(assetsDir, "assets");
   }
   await archive.finalize();
-  addLog(project, "export", { assetsIncluded: await fs.pathExists(assetsDir) });
-  await saveProject(project);
 });
 
 app.post("/api/import", importUpload.single("file"), async (req, res) => {
