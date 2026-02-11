@@ -16,6 +16,7 @@ const PORT = process.env.PORT || 3001;
 const dataDir = path.join(__dirname, "data");
 const assetsDir = path.join(dataDir, "assets");
 const projectPath = path.join(dataDir, "project.json");
+const micToggleLogPath = path.join(dataDir, "mic-toggle.log");
 const defaultProject = {
   background: null,
   microphones: [],
@@ -35,6 +36,9 @@ const ensureData = async () => {
   if (!(await fs.pathExists(projectPath))) {
     await fs.writeJson(projectPath, defaultProject, { spaces: 2 });
   }
+  if (!(await fs.pathExists(micToggleLogPath))) {
+    await fs.writeFile(micToggleLogPath, "");
+  }
 };
 
 const loadProject = async () => {
@@ -44,6 +48,13 @@ const loadProject = async () => {
 
 const saveProject = async (project) => {
   await fs.writeJson(projectPath, project, { spaces: 2 });
+};
+
+
+const writeMicToggleLog = async ({ micId, seatNumber, isOn }) => {
+  const stateLabel = isOn ? "ON" : "OFF";
+  const line = `${new Date().toISOString()} mic=${micId} seat=${seatNumber ?? "unknown"} state=${stateLabel}\n`;
+  await fs.appendFile(micToggleLogPath, line, "utf8");
 };
 
 const addLog = (project, type, details = null) => {
@@ -109,6 +120,39 @@ app.post("/api/project", async (req, res) => {
   addLog(project, "save", { microphoneCount: project.microphones.length });
   await saveProject(project);
   res.json(project);
+});
+
+
+app.post("/api/microphones/:micId/state", async (req, res) => {
+  const { micId } = req.params;
+  const { isOn, seatNumber } = req.body || {};
+
+  if (typeof isOn !== "boolean") {
+    res.status(400).json({ error: "Missing boolean isOn field" });
+    return;
+  }
+
+  const project = await loadProject();
+  const micIndex = project.microphones.findIndex((mic) => mic.id === micId);
+
+  if (micIndex === -1) {
+    res.status(404).json({ error: "Microphone not found" });
+    return;
+  }
+
+  project.microphones[micIndex] = {
+    ...project.microphones[micIndex],
+    isOn
+  };
+
+  await saveProject(project);
+  await writeMicToggleLog({
+    micId,
+    seatNumber: seatNumber ?? project.microphones[micIndex].seatNumber,
+    isOn
+  });
+
+  res.json({ ok: true });
 });
 
 app.post("/api/log", async (req, res) => {

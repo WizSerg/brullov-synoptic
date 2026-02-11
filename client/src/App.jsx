@@ -73,6 +73,7 @@ const normalizeProject = (data) => {
     return {
       ...mic,
       seatNumber,
+      isOn: typeof mic.isOn === "boolean" ? mic.isOn : false,
       seatText: typeof mic.seatText === "string" ? mic.seatText : `${seatNumber}`,
       label: typeof mic.label === "string" ? mic.label : ""
     };
@@ -224,7 +225,8 @@ const App = () => {
       id: crypto.randomUUID(),
       x: 0.5,
       y: 0.5,
-      seatNumber: getNextSeatNumber(microphones)
+      seatNumber: getNextSeatNumber(microphones),
+      isOn: false
     };
     newMic.seatText = `${newMic.seatNumber}`;
     newMic.label = "";
@@ -332,12 +334,56 @@ const App = () => {
   };
 
   const handleMicClick = (micId, seatNumber) => {
-    if (mode !== "edit") {
-      console.info(`Clicked mic ${seatNumber}`);
+    if (mode === "run") {
+      handleMicToggle(micId, seatNumber);
       return;
     }
 
     setSelectedMicId(micId);
+  };
+
+  const handleMicToggle = async (micId, seatNumber) => {
+    let nextProject = null;
+    let nextIsOn = false;
+
+    setProject((prev) => {
+      const mic = prev.microphones.find((item) => item.id === micId);
+      if (!mic) {
+        return prev;
+      }
+
+      nextIsOn = !Boolean(mic.isOn);
+      nextProject = {
+        ...prev,
+        microphones: prev.microphones.map((item) => (item.id === micId ? { ...item, isOn: nextIsOn } : item))
+      };
+      return nextProject;
+    });
+
+    if (!nextProject) {
+      return;
+    }
+
+    setDirty(true);
+
+    try {
+      const toggleResponse = await fetch(`/api/microphones/${micId}/state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isOn: nextIsOn, seatNumber })
+      });
+      if (!toggleResponse.ok) {
+        console.error("Mic toggle request failed with status", toggleResponse.status);
+      }
+
+      const autosaved = await handleSave(nextProject);
+      if (!autosaved) {
+        console.error("Autosave failed after microphone toggle");
+        showToast("Autosave failed after microphone toggle.");
+      }
+    } catch (error) {
+      console.error("Mic toggle request failed", error);
+    }
   };
 
   const handleDeleteMic = () => {
@@ -519,7 +565,7 @@ const App = () => {
                     >
                       <Circle
                         radius={micRadius}
-                        fill={mode === "edit" ? "#4c6ef5" : "#868e96"}
+                        fill={mode === "edit" ? "#4c6ef5" : mic.isOn ? "#2f9e44" : "#868e96"}
                         stroke={isSelected ? "#f59f00" : undefined}
                         strokeWidth={isSelected ? 3 : 0}
                       />
