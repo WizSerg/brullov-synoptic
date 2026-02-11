@@ -372,23 +372,6 @@ const App = () => {
     setDirty(true);
   };
 
-  const handleAutoRenumber = () => {
-    let fallbackSeat = 1;
-    setProject((prev) => ({
-      ...prev,
-      microphones: prev.microphones.map((mic) => {
-        const numericSeat = Number.parseInt(`${mic.seatText ?? ""}`.trim(), 10);
-        if (Number.isFinite(numericSeat) && numericSeat > 0) {
-          fallbackSeat = Math.max(fallbackSeat, numericSeat + 1);
-          return { ...mic, seatNumber: numericSeat };
-        }
-        const updated = { ...mic, seatNumber: fallbackSeat };
-        fallbackSeat += 1;
-        return updated;
-      })
-    }));
-    setDirty(true);
-  };
 
   const handleFontSettingChange = (field, value) => {
     setProject((prev) => ({
@@ -601,15 +584,6 @@ const App = () => {
                     placeholder="Shown when Labels are On"
                   />
                 </label>
-                <div className="property-row">
-                  <span className="property-label">Position</span>
-                  <span className="property-value">
-                    {Math.round(selectedMic.x * 100)}%, {Math.round(selectedMic.y * 100)}%
-                  </span>
-                </div>
-                <button type="button" className="button button--secondary" onClick={handleAutoRenumber}>
-                  Auto renumber
-                </button>
                 <button type="button" className="button button--danger" onClick={handleDeleteMic}>
                   Delete microphone
                 </button>
