@@ -3,7 +3,9 @@ import { Stage, Layer, Image as KonvaImage, Circle, Group, Text, Rect } from "re
 import useImage from "use-image";
 
 const DEFAULT_PROJECT = {
-  background: null,
+  background: false,
+  backgroundExt: null,
+  backgroundUpdatedAt: null,
   microphones: [],
   logs: [],
   showLabels: true,
@@ -86,6 +88,9 @@ const normalizeProject = (data) => {
   return {
     ...DEFAULT_PROJECT,
     ...data,
+    background: Boolean(data.background),
+    backgroundExt: typeof data.backgroundExt === "string" ? data.backgroundExt : null,
+    backgroundUpdatedAt: typeof data.backgroundUpdatedAt === "string" ? data.backgroundUpdatedAt : null,
     microphones: normalizedMics,
     showLabels: typeof data.showLabels === "boolean" ? data.showLabels : DEFAULT_PROJECT.showLabels,
     micSize:
@@ -105,7 +110,11 @@ const App = () => {
   const [stageSize, setStageSize] = useState({ width: 900, height: 520 });
   const containerRef = useRef(null);
   const previousModeRef = useRef("edit");
-  const [bgImage] = useImage(project.background?.url || "");
+  const backgroundUrl =
+    project.background && project.backgroundExt
+      ? `/api/background/file?v=${encodeURIComponent(project.backgroundUpdatedAt || "current")}`
+      : "";
+  const [bgImage] = useImage(backgroundUrl);
   const [selectedMicId, setSelectedMicId] = useState(null);
   const [showLogs, setShowLogs] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
