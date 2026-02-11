@@ -23,6 +23,11 @@ const FONT_OPTIONS = [
   { value: "monospace", label: "Monospace" }
 ];
 
+const MIC_STATE = {
+  ON: "ON",
+  OFF: "OFF"
+};
+
 const formatTimestamp = (value) => new Date(value).toLocaleString();
 
 const logLabel = (entry) => {
@@ -74,7 +79,8 @@ const normalizeProject = (data) => {
       ...mic,
       seatNumber,
       seatText: typeof mic.seatText === "string" ? mic.seatText : `${seatNumber}`,
-      label: typeof mic.label === "string" ? mic.label : ""
+      label: typeof mic.label === "string" ? mic.label : "",
+      state: mic.state === MIC_STATE.ON ? MIC_STATE.ON : MIC_STATE.OFF
     };
   });
   return {
@@ -224,7 +230,8 @@ const App = () => {
       id: crypto.randomUUID(),
       x: 0.5,
       y: 0.5,
-      seatNumber: getNextSeatNumber(microphones)
+      seatNumber: getNextSeatNumber(microphones),
+      state: MIC_STATE.OFF
     };
     newMic.seatText = `${newMic.seatNumber}`;
     newMic.label = "";
@@ -331,9 +338,17 @@ const App = () => {
     setDirty(true);
   };
 
-  const handleMicClick = (micId, seatNumber) => {
+  const handleMicClick = async (micId) => {
     if (mode !== "edit") {
-      console.info(`Clicked mic ${seatNumber}`);
+      const response = await fetch(`/api/microphones/${micId}/toggle`, { method: "POST" });
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json();
+      setProject((prev) => ({
+        ...prev,
+        microphones: prev.microphones.map((item) => (item.id === data.id ? { ...item, state: data.state } : item))
+      }));
       return;
     }
 
@@ -514,12 +529,14 @@ const App = () => {
                       y={absoluteY}
                       draggable={mode === "edit"}
                       onDragEnd={(event) => handleDragEnd(event, mic)}
-                      onClick={() => handleMicClick(mic.id, mic.seatNumber ?? index + 1)}
-                      onTap={() => handleMicClick(mic.id, mic.seatNumber ?? index + 1)}
+                      onClick={() => handleMicClick(mic.id)}
+                      onTap={() => handleMicClick(mic.id)}
                     >
                       <Circle
                         radius={micRadius}
-                        fill={mode === "edit" ? "#4c6ef5" : "#868e96"}
+                        fill={
+                          mode === "edit" ? "#4c6ef5" : mic.state === MIC_STATE.ON ? "#2f9e44" : "#868e96"
+                        }
                         stroke={isSelected ? "#f59f00" : undefined}
                         strokeWidth={isSelected ? 3 : 0}
                       />
