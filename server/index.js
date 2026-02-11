@@ -30,6 +30,13 @@ const defaultProject = {
   }
 };
 
+const MIC_STATE = {
+  ON: "ON",
+  OFF: "OFF"
+};
+
+const microphoneRuntimeStates = new Map();
+
 const ensureData = async () => {
   await fs.ensureDir(assetsDir);
   if (!(await fs.pathExists(projectPath))) {
@@ -45,6 +52,46 @@ const loadProject = async () => {
 const saveProject = async (project) => {
   await fs.writeJson(projectPath, project, { spaces: 2 });
 };
+
+const normalizeRuntimeMicState = (state) => (state === MIC_STATE.ON ? MIC_STATE.ON : MIC_STATE.OFF);
+
+const withRuntimeMicStates = (project) => {
+  const microphones = Array.isArray(project.microphones)
+    ? project.microphones.map((mic) => ({
+        ...mic,
+        state: normalizeRuntimeMicState(microphoneRuntimeStates.get(mic.id))
+      }))
+    : [];
+  return {
+    ...project,
+    microphones
+  };
+};
+
+const reconcileRuntimeMicStates = (microphones) => {
+  const incomingIds = new Set();
+  for (const mic of microphones || []) {
+    if (!mic?.id) {
+      continue;
+    }
+    incomingIds.add(mic.id);
+    if (!microphoneRuntimeStates.has(mic.id)) {
+      microphoneRuntimeStates.set(mic.id, MIC_STATE.OFF);
+    }
+  }
+
+  for (const micId of microphoneRuntimeStates.keys()) {
+    if (!incomingIds.has(micId)) {
+      microphoneRuntimeStates.delete(micId);
+    }
+  }
+};
+
+const sanitizeMicrophonesForStorage = (microphones) =>
+  (microphones || []).map((mic) => {
+    const { state: _state, ...persistedMic } = mic;
+    return persistedMic;
+  });
 
 const addLog = (project, type, details = null) => {
   const entry = {
@@ -81,7 +128,8 @@ app.use("/assets", express.static(assetsDir));
 
 app.get("/api/project", async (_req, res) => {
   const project = await loadProject();
-  res.json(project);
+  reconcileRuntimeMicStates(project.microphones);
+  res.json(withRuntimeMicStates(project));
 });
 
 app.post("/api/project", async (req, res) => {
@@ -92,7 +140,8 @@ app.post("/api/project", async (req, res) => {
     project.background = background;
   }
   if (microphones !== undefined) {
-    project.microphones = microphones;
+    project.microphones = sanitizeMicrophonesForStorage(microphones);
+    reconcileRuntimeMicStates(project.microphones);
   }
   if (showLabels !== undefined) {
     project.showLabels = showLabels;
@@ -108,7 +157,28 @@ app.post("/api/project", async (req, res) => {
   }
   addLog(project, "save", { microphoneCount: project.microphones.length });
   await saveProject(project);
-  res.json(project);
+  res.json(withRuntimeMicStates(project));
+});
+
+app.post("/api/microphones/:id/toggle", async (req, res) => {
+  const micId = req.params.id;
+  if (!micId) {
+    res.status(400).json({ error: "Missing microphone id" });
+    return;
+  }
+
+  const project = await loadProject();
+  const micExists = Array.isArray(project.microphones) && project.microphones.some((mic) => mic.id === micId);
+  if (!micExists) {
+    res.status(404).json({ error: "Microphone not found" });
+    return;
+  }
+
+  const currentState = normalizeRuntimeMicState(microphoneRuntimeStates.get(micId));
+  const nextState = currentState === MIC_STATE.ON ? MIC_STATE.OFF : MIC_STATE.ON;
+  microphoneRuntimeStates.set(micId, nextState);
+
+  res.json({ id: micId, state: nextState });
 });
 
 app.post("/api/log", async (req, res) => {
@@ -145,7 +215,10 @@ app.post("/api/export", async (req, res) => {
     ...project,
     ...(req.body || {}),
     background: req.body?.background !== undefined ? req.body.background : project.background,
-    microphones: req.body?.microphones !== undefined ? req.body.microphones : project.microphones,
+    microphones:
+      req.body?.microphones !== undefined
+        ? sanitizeMicrophonesForStorage(req.body.microphones)
+        : sanitizeMicrophonesForStorage(project.microphones),
     showLabels: req.body?.showLabels !== undefined ? req.body.showLabels : project.showLabels,
     micSize: req.body?.micSize !== undefined ? req.body.micSize : project.micSize,
     fontSettings: req.body?.fontSettings !== undefined ? req.body.fontSettings : project.fontSettings,
@@ -202,6 +275,8 @@ app.post("/api/import", importUpload.single("file"), async (req, res) => {
   if (typeof project.micSize !== "number") {
     project.micSize = defaultProject.micSize;
   }
+  project.microphones = sanitizeMicrophonesForStorage(project.microphones);
+  reconcileRuntimeMicStates(project.microphones);
   project.fontSettings = {
     ...defaultProject.fontSettings,
     ...(project.fontSettings || {})
