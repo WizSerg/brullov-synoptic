@@ -16,8 +16,12 @@ const PORT = process.env.PORT || 3001;
 const dataDir = path.join(__dirname, "data");
 const assetsDir = path.join(dataDir, "assets");
 const projectPath = path.join(dataDir, "project.json");
+const BACKGROUND_BASENAME = "background";
+const SUPPORTED_BACKGROUND_EXTENSIONS = new Set(["png", "jpg", "jpeg"]);
 const defaultProject = {
-  background: null,
+  background: false,
+  backgroundExt: null,
+  backgroundUpdatedAt: null,
   microphones: [],
   logs: [],
   showLabels: true,
@@ -44,9 +48,89 @@ const ensureData = async () => {
   }
 };
 
+const getBackgroundPath = (ext) => path.join(dataDir, `${BACKGROUND_BASENAME}.${ext}`);
+
+const getBackgroundExtensionFromName = (filename = "") => {
+  const ext = path.extname(filename).replace(".", "").toLowerCase();
+  return SUPPORTED_BACKGROUND_EXTENSIONS.has(ext) ? ext : null;
+};
+
+const resolveBackgroundExtension = ({ mimetype, originalname }) => {
+  if (mimetype === "image/png") {
+    return "png";
+  }
+  if (mimetype === "image/jpeg") {
+    return "jpg";
+  }
+  return getBackgroundExtensionFromName(originalname);
+};
+
+const removeStoredBackgroundFiles = async ({ keepExt = null } = {}) => {
+  const entries = await fs.readdir(dataDir);
+  const keepFilename = keepExt ? `${BACKGROUND_BASENAME}.${keepExt}` : null;
+  await Promise.all(
+    entries
+      .filter((entry) => {
+        if (!entry.startsWith(`${BACKGROUND_BASENAME}.`)) {
+          return false;
+        }
+        if (keepFilename && entry === keepFilename) {
+          return false;
+        }
+        return Boolean(getBackgroundExtensionFromName(entry));
+      })
+      .map((entry) => fs.remove(path.join(dataDir, entry)))
+  );
+};
+
+const normalizeProjectBackground = async (project) => {
+  const existingExt = typeof project.backgroundExt === "string" ? project.backgroundExt : null;
+  const hasExisting =
+    Boolean(project.background) && Boolean(existingExt) && (await fs.pathExists(getBackgroundPath(existingExt)));
+
+  if (hasExisting) {
+    await removeStoredBackgroundFiles({ keepExt: existingExt });
+    return {
+      ...project,
+      background: true,
+      backgroundExt: existingExt,
+      backgroundUpdatedAt: project.backgroundUpdatedAt ?? null
+    };
+  }
+
+  if (project.background?.filename) {
+    const legacyExt = getBackgroundExtensionFromName(project.background.filename);
+    const legacyPath = legacyExt ? path.join(assetsDir, project.background.filename) : null;
+    if (legacyPath && (await fs.pathExists(legacyPath))) {
+      const destination = getBackgroundPath(legacyExt);
+      await removeStoredBackgroundFiles();
+      await fs.copyFile(legacyPath, destination);
+      return {
+        ...project,
+        background: true,
+        backgroundExt: legacyExt,
+        backgroundUpdatedAt: new Date().toISOString()
+      };
+    }
+  }
+
+  await removeStoredBackgroundFiles();
+  return {
+    ...project,
+    background: false,
+    backgroundExt: null,
+    backgroundUpdatedAt: null
+  };
+};
+
 const loadProject = async () => {
   await ensureData();
-  return fs.readJson(projectPath);
+  const project = await fs.readJson(projectPath);
+  const normalizedProject = await normalizeProjectBackground(project);
+  if (JSON.stringify(project) !== JSON.stringify(normalizedProject)) {
+    await saveProject(normalizedProject);
+  }
+  return normalizedProject;
 };
 
 const saveProject = async (project) => {
@@ -107,24 +191,26 @@ const addLog = (project, type, details = null) => {
 app.use(express.json({ limit: "10mb" }));
 app.use(cors());
 
-const backgroundStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, assetsDir);
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    const base = path
-      .basename(file.originalname, ext)
-      .replace(/\s+/g, "-")
-      .replace(/[^a-zA-Z0-9-_]/g, "");
-    cb(null, `${Date.now()}-${base || "background"}${ext}`);
-  }
-});
-
-const backgroundUpload = multer({ storage: backgroundStorage });
+const backgroundUpload = multer({ storage: multer.memoryStorage() });
 const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 app.use("/assets", express.static(assetsDir));
+
+app.get("/api/background/file", async (_req, res) => {
+  const project = await loadProject();
+  if (!project.background || !project.backgroundExt) {
+    res.status(404).json({ error: "No background image" });
+    return;
+  }
+
+  const backgroundPath = getBackgroundPath(project.backgroundExt);
+  if (!(await fs.pathExists(backgroundPath))) {
+    res.status(404).json({ error: "No background image" });
+    return;
+  }
+
+  res.sendFile(backgroundPath);
+});
 
 app.get("/api/project", async (_req, res) => {
   const project = await loadProject();
@@ -137,7 +223,12 @@ app.post("/api/project", async (req, res) => {
   const { background, microphones } = req.body || {};
   const { showLabels, micSize, fontSettings } = req.body || {};
   if (background !== undefined) {
-    project.background = background;
+    project.background = Boolean(background);
+    if (!project.background) {
+      project.backgroundExt = null;
+      project.backgroundUpdatedAt = null;
+      await removeStoredBackgroundFiles();
+    }
   }
   if (microphones !== undefined) {
     project.microphones = sanitizeMicrophonesForStorage(microphones);
@@ -198,13 +289,22 @@ app.post("/api/background", backgroundUpload.single("file"), async (req, res) =>
     res.status(400).json({ error: "No file uploaded" });
     return;
   }
+  const backgroundExt = resolveBackgroundExtension(req.file);
+  if (!backgroundExt) {
+    res.status(400).json({ error: "Unsupported image type. Use PNG or JPEG." });
+    return;
+  }
+
+  await removeStoredBackgroundFiles();
+  const filename = `${BACKGROUND_BASENAME}.${backgroundExt}`;
+  const destination = getBackgroundPath(backgroundExt);
+  await fs.writeFile(destination, req.file.buffer);
+
   const project = await loadProject();
-  const background = {
-    filename: req.file.filename,
-    url: `/assets/${req.file.filename}`
-  };
-  project.background = background;
-  addLog(project, "background_upload", { filename: req.file.filename });
+  project.background = true;
+  project.backgroundExt = backgroundExt;
+  project.backgroundUpdatedAt = new Date().toISOString();
+  addLog(project, "background_upload", { filename });
   await saveProject(project);
   res.json(project);
 });
@@ -232,8 +332,11 @@ app.post("/api/export", async (req, res) => {
   });
   archive.pipe(res);
   archive.append(JSON.stringify(exportProject, null, 2), { name: "project.json" });
-  if (await fs.pathExists(assetsDir)) {
-    archive.directory(assetsDir, "assets");
+  if (project.background && project.backgroundExt) {
+    const backgroundPath = getBackgroundPath(project.backgroundExt);
+    if (await fs.pathExists(backgroundPath)) {
+      archive.file(backgroundPath, { name: `assets/${BACKGROUND_BASENAME}.${project.backgroundExt}` });
+    }
   }
   await archive.finalize();
 });
@@ -246,24 +349,14 @@ app.post("/api/import", importUpload.single("file"), async (req, res) => {
   const zip = new AdmZip(req.file.buffer);
   await fs.ensureDir(assetsDir);
   await fs.emptyDir(assetsDir);
+  await removeStoredBackgroundFiles();
 
   let project = { ...defaultProject };
+  const entriesByName = new Map(zip.getEntries().map((entry) => [entry.entryName, entry]));
 
-  for (const entry of zip.getEntries()) {
-    const entryName = entry.entryName;
-    if (entryName === "project.json") {
-      project = JSON.parse(entry.getData().toString("utf8"));
-      continue;
-    }
-    if (entryName.startsWith("assets/") && !entry.isDirectory) {
-      const relPath = entryName.replace(/^assets\//, "");
-      if (!relPath) {
-        continue;
-      }
-      const dest = path.join(assetsDir, relPath);
-      await fs.ensureDir(path.dirname(dest));
-      await fs.writeFile(dest, entry.getData());
-    }
+  const projectEntry = entriesByName.get("project.json");
+  if (projectEntry) {
+    project = JSON.parse(projectEntry.getData().toString("utf8"));
   }
 
   if (!Array.isArray(project.logs)) {
@@ -281,6 +374,37 @@ app.post("/api/import", importUpload.single("file"), async (req, res) => {
     ...defaultProject.fontSettings,
     ...(project.fontSettings || {})
   };
+
+  let importedBackgroundExt = null;
+  let importedBackgroundEntry = null;
+
+  if (project.background && project.backgroundExt) {
+    const ext = getBackgroundExtensionFromName(project.backgroundExt);
+    if (ext) {
+      importedBackgroundExt = ext;
+      importedBackgroundEntry = entriesByName.get(`assets/${BACKGROUND_BASENAME}.${ext}`) || null;
+    }
+  }
+
+  if (!importedBackgroundEntry && project.background?.filename) {
+    const legacyExt = getBackgroundExtensionFromName(project.background.filename);
+    const legacyEntry = legacyExt ? entriesByName.get(`assets/${project.background.filename}`) : null;
+    if (legacyExt && legacyEntry) {
+      importedBackgroundExt = legacyExt;
+      importedBackgroundEntry = legacyEntry;
+    }
+  }
+
+  if (importedBackgroundExt && importedBackgroundEntry && !importedBackgroundEntry.isDirectory) {
+    await fs.writeFile(getBackgroundPath(importedBackgroundExt), importedBackgroundEntry.getData());
+    project.background = true;
+    project.backgroundExt = importedBackgroundExt;
+    project.backgroundUpdatedAt = new Date().toISOString();
+  } else {
+    project.background = false;
+    project.backgroundExt = null;
+    project.backgroundUpdatedAt = null;
+  }
 
   addLog(project, "import", { assetCount: (await fs.readdir(assetsDir)).length });
   await saveProject(project);
