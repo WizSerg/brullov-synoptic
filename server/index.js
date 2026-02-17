@@ -6,6 +6,7 @@ import multer from "multer";
 import archiver from "archiver";
 import AdmZip from "adm-zip";
 import crypto from "node:crypto";
+import os from "node:os";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,6 +17,8 @@ const PORT = process.env.PORT || 3001;
 const dataDir = path.join(__dirname, "data");
 const assetsDir = path.join(dataDir, "assets");
 const logsDir = path.join(dataDir, "logs");
+const rootPackagePath = path.join(__dirname, "..", "package.json");
+const serverPackagePath = path.join(__dirname, "package.json");
 const projectPath = path.join(dataDir, "project.json");
 const appLogPath = path.join(logsDir, "app.log");
 const LOG_ROTATE_MAX_SIZE_BYTES = 5 * 1024 * 1024;
@@ -43,6 +46,26 @@ const MIC_STATE = {
 };
 
 const microphoneRuntimeStates = new Map();
+let appMetadataPromise = null;
+
+const readAppMetadata = async () => {
+  const [rootPackage = {}, serverPackage = {}] = await Promise.all([
+    fs.readJson(rootPackagePath).catch(() => ({})),
+    fs.readJson(serverPackagePath).catch(() => ({}))
+  ]);
+
+  return {
+    name: rootPackage.name || serverPackage.name || "synoptic",
+    version: rootPackage.version || serverPackage.version || "unknown"
+  };
+};
+
+const getAppMetadata = async () => {
+  if (!appMetadataPromise) {
+    appMetadataPromise = readAppMetadata();
+  }
+  return appMetadataPromise;
+};
 
 const ensureData = async () => {
   await fs.ensureDir(assetsDir);
@@ -484,6 +507,19 @@ app.post("/api/import", importUpload.single("file"), async (req, res) => {
   await addLog("import", { assetCount: (await fs.readdir(assetsDir)).length });
   await saveProject(project);
   res.json(project);
+});
+
+app.get("/api/about", async (_req, res) => {
+  const appMeta = await getAppMetadata();
+  res.json({
+    appName: appMeta.name,
+    appVersion: appMeta.version,
+    nodeVersion: process.version,
+    platform: os.platform(),
+    release: os.release(),
+    arch: os.arch(),
+    hostname: os.hostname() || null
+  });
 });
 
 if (process.env.NODE_ENV === "production") {
