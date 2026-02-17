@@ -101,7 +101,7 @@ const normalizeProject = (data) => {
   };
 };
 
-const App = () => {
+const App = ({ onLogout = () => {}, username = "admin" }) => {
   const [mode, setMode] = useState("edit");
   const [project, setProject] = useState(DEFAULT_PROJECT);
   const [dirty, setDirty] = useState(false);
@@ -120,6 +120,10 @@ const App = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [aboutInfo, setAboutInfo] = useState(null);
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordStatus, setPasswordStatus] = useState("");
 
   const microphones = project.microphones ?? [];
 
@@ -447,6 +451,37 @@ const App = () => {
     setDirty(true);
   };
 
+  const handleChangePassword = async (event) => {
+    event.preventDefault();
+    setPasswordStatus("");
+
+    if (!newPassword) {
+      setPasswordStatus("New password cannot be empty.");
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setPasswordStatus("New password and confirmation do not match.");
+      return;
+    }
+
+    const response = await fetch("/api/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ oldPassword, newPassword })
+    });
+
+    if (!response.ok) {
+      setPasswordStatus("Password update failed. Check old password.");
+      return;
+    }
+
+    setOldPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setPasswordStatus("Password updated.");
+  };
+
   useEffect(() => {
     const previousMode = previousModeRef.current;
     previousModeRef.current = mode;
@@ -489,6 +524,7 @@ const App = () => {
           <span className="dirty-indicator">{dirty ? "Unsaved changes" : "All changes saved"}</span>
         </div>
         <div className="toolbar__group">
+          <span className="dirty-indicator">User: {username}</span>
           <button type="button" className="button button--secondary" onClick={() => setShowLogs(true)}>
             Logs
           </button>
@@ -533,6 +569,9 @@ const App = () => {
             }}
           >
             +
+          </button>
+          <button type="button" className="button button--secondary" onClick={onLogout}>
+            Logout
           </button>
         </div>
         <div className="toolbar__group">
@@ -749,6 +788,42 @@ const App = () => {
                 </select>
               </label>
             </div>
+            <form className="password-form" onSubmit={handleChangePassword}>
+              <h3>Change password</h3>
+              <label className="property-field">
+                <span className="property-label">Old password</span>
+                <input
+                  className="input"
+                  type="password"
+                  value={oldPassword}
+                  onChange={(event) => setOldPassword(event.target.value)}
+                />
+              </label>
+              <label className="property-field">
+                <span className="property-label">New password</span>
+                <input
+                  className="input"
+                  type="password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                />
+              </label>
+              <label className="property-field">
+                <span className="property-label">Confirm new password</span>
+                <input
+                  className="input"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                />
+              </label>
+              {passwordStatus && <p className="log-empty">{passwordStatus}</p>}
+              <div className="log-modal__actions">
+                <button type="submit" className="button">
+                  Update password
+                </button>
+              </div>
+            </form>
             <div className="log-modal__actions">
               <button type="button" className="button button--secondary" onClick={() => setShowSettings(false)}>
                 Close

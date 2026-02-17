@@ -27,6 +27,11 @@ Then open http://localhost:3001 (the server serves the built UI).
 
 ## Features (MVP v1)
 
+- Single-user authentication (cookie session).
+- Default credentials: `admin` / `admin`.
+- Login page (`/login`) and redirect for unauthenticated users.
+- Change password from Settings (old/new/confirm).
+
 - Upload a background image (PNG/JPG) and display it on the canvas.
 - Add microphone widgets on top of the background.
 - Drag microphones in **Edit mode** only (Run mode disables dragging).
@@ -37,6 +42,27 @@ Then open http://localhost:3001 (the server serves the built UI).
 - Save/load the project locally (filesystem JSON + assets).
 - Export the project as a zip (`project.json` + assets) and import it back.
 - Log actions (add/delete mic, save, import/export, background upload, mic toggles) into rotating files under `server/data/logs/`.
+
+## Authentication
+
+- Auth is intentionally minimal: one local account, one effective role (admin).
+- Credentials are stored in `server/data/auth.json` with PBKDF2 hash + salt (no plaintext passwords).
+- Default first-run credentials:
+  - username: `admin`
+  - password: `admin`
+- Session is cookie-based (`HttpOnly`, `SameSite=Lax`).
+
+### Auth API
+
+- `POST /api/login`
+  - Body: `{ "username": "admin", "password": "admin" }`
+  - Result: sets auth session cookie.
+- `POST /api/logout`
+  - Clears auth session cookie.
+- `POST /api/change-password` (requires auth)
+  - Body: `{ "oldPassword": "...", "newPassword": "..." }`
+- `GET /api/auth/me`
+  - Returns current auth status + username.
 
 ## Acceptance criteria mapping
 
