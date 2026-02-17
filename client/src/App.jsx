@@ -118,6 +118,8 @@ const App = () => {
   const [showLogs, setShowLogs] = useState(false);
   const [logs, setLogs] = useState([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [aboutInfo, setAboutInfo] = useState(null);
 
   const microphones = project.microphones ?? [];
 
@@ -165,6 +167,15 @@ const App = () => {
     }
     const data = await response.json();
     setLogs(Array.isArray(data) ? data : []);
+  };
+
+  const fetchAbout = async () => {
+    const response = await fetch("/api/about");
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    setAboutInfo(data || null);
   };
 
   useEffect(() => {
@@ -219,6 +230,23 @@ const App = () => {
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
   }, [showSettings]);
+
+  useEffect(() => {
+    if (!showAbout) {
+      return;
+    }
+
+    fetchAbout();
+
+    const handleEscape = (event) => {
+      if (event.key === "Escape") {
+        setShowAbout(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [showAbout]);
 
   const handleBackgroundUpload = async (event) => {
     const file = event.target.files?.[0];
@@ -466,6 +494,9 @@ const App = () => {
           </button>
           <button type="button" className="button button--secondary" onClick={() => setShowSettings(true)}>
             Settings
+          </button>
+          <button type="button" className="button button--secondary" onClick={() => setShowAbout(true)}>
+            About
           </button>
           <button
             type="button"
@@ -720,6 +751,56 @@ const App = () => {
             </div>
             <div className="log-modal__actions">
               <button type="button" className="button button--secondary" onClick={() => setShowSettings(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showAbout && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setShowAbout(false)}>
+          <div
+            className="about-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="About"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>About</h2>
+            <div className="about-grid">
+              <div className="about-row">
+                <span className="property-label">App</span>
+                <span className="property-value">{aboutInfo?.appName || "—"}</span>
+              </div>
+              <div className="about-row">
+                <span className="property-label">Version</span>
+                <span className="property-value">{aboutInfo?.appVersion || "—"}</span>
+              </div>
+              <div className="about-row">
+                <span className="property-label">Node.js</span>
+                <span className="property-value">{aboutInfo?.nodeVersion || "—"}</span>
+              </div>
+              <div className="about-row">
+                <span className="property-label">Platform</span>
+                <span className="property-value">{aboutInfo?.platform || "—"}</span>
+              </div>
+              <div className="about-row">
+                <span className="property-label">Release</span>
+                <span className="property-value">{aboutInfo?.release || "—"}</span>
+              </div>
+              <div className="about-row">
+                <span className="property-label">Architecture</span>
+                <span className="property-value">{aboutInfo?.arch || "—"}</span>
+              </div>
+              {aboutInfo?.hostname && (
+                <div className="about-row">
+                  <span className="property-label">Hostname</span>
+                  <span className="property-value">{aboutInfo.hostname}</span>
+                </div>
+              )}
+            </div>
+            <div className="log-modal__actions">
+              <button type="button" className="button button--secondary" onClick={() => setShowAbout(false)}>
                 Close
               </button>
             </div>
