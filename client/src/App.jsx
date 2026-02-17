@@ -7,7 +7,6 @@ const DEFAULT_PROJECT = {
   backgroundExt: null,
   backgroundUpdatedAt: null,
   microphones: [],
-  logs: [],
   showLabels: true,
   micSize: 32,
   fontSettings: {
@@ -117,6 +116,7 @@ const App = () => {
   const [bgImage] = useImage(backgroundUrl);
   const [selectedMicId, setSelectedMicId] = useState(null);
   const [showLogs, setShowLogs] = useState(false);
+  const [logs, setLogs] = useState([]);
   const [showSettings, setShowSettings] = useState(false);
 
   const microphones = project.microphones ?? [];
@@ -155,11 +155,21 @@ const App = () => {
       return;
     }
     const logs = await response.json();
-    setProject((prev) => ({ ...prev, logs }));
+    setLogs(Array.isArray(logs) ? logs : []);
+  };
+
+  const fetchLogs = async (limit = 200) => {
+    const response = await fetch(`/api/logs?limit=${encodeURIComponent(limit)}`);
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    setLogs(Array.isArray(data) ? data : []);
   };
 
   useEffect(() => {
     fetchProject();
+    fetchLogs();
   }, []);
 
   useEffect(() => {
@@ -182,6 +192,8 @@ const App = () => {
     if (!showLogs) {
       return;
     }
+
+    fetchLogs();
 
     const handleEscape = (event) => {
       if (event.key === "Escape") {
@@ -289,8 +301,7 @@ const App = () => {
         microphones: project.microphones,
         showLabels: project.showLabels,
         micSize: project.micSize,
-        fontSettings: project.fontSettings,
-        logs: project.logs
+        fontSettings: project.fontSettings
       })
     });
     if (!response.ok) {
@@ -629,8 +640,8 @@ const App = () => {
           >
             <h2>Activity log</h2>
             <ul>
-              {project.logs.length === 0 && <li className="log-empty">No actions yet.</li>}
-              {project.logs.map((entry) => (
+              {logs.length === 0 && <li className="log-empty">No actions yet.</li>}
+              {logs.map((entry) => (
                 <li key={entry.id}>
                   <span className="log-title">{logLabel(entry)}</span>
                   <span className="log-time">{formatTimestamp(entry.timestamp)}</span>

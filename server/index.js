@@ -15,7 +15,11 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const dataDir = path.join(__dirname, "data");
 const assetsDir = path.join(dataDir, "assets");
+const logsDir = path.join(dataDir, "logs");
 const projectPath = path.join(dataDir, "project.json");
+const appLogPath = path.join(logsDir, "app.log");
+const LOG_ROTATE_MAX_SIZE_BYTES = 5 * 1024 * 1024;
+const LOG_ROTATE_MAX_FILES = 5;
 const BACKGROUND_BASENAME = "background";
 const SUPPORTED_BACKGROUND_EXTENSIONS = new Set(["png", "jpg", "jpeg"]);
 const defaultProject = {
@@ -23,7 +27,6 @@ const defaultProject = {
   backgroundExt: null,
   backgroundUpdatedAt: null,
   microphones: [],
-  logs: [],
   showLabels: true,
   micSize: 32,
   fontSettings: {
@@ -43,9 +46,77 @@ const microphoneRuntimeStates = new Map();
 
 const ensureData = async () => {
   await fs.ensureDir(assetsDir);
+  await fs.ensureDir(logsDir);
   if (!(await fs.pathExists(projectPath))) {
     await fs.writeJson(projectPath, defaultProject, { spaces: 2 });
   }
+};
+
+const rotateLogsIfNeeded = async (incomingEntryBytes) => {
+  if (!(await fs.pathExists(appLogPath))) {
+    return;
+  }
+
+  const { size } = await fs.stat(appLogPath);
+  if (size + incomingEntryBytes <= LOG_ROTATE_MAX_SIZE_BYTES) {
+    return;
+  }
+
+  const maxSuffix = LOG_ROTATE_MAX_FILES - 1;
+  const oldestPath = `${appLogPath}.${maxSuffix}`;
+  if (await fs.pathExists(oldestPath)) {
+    await fs.remove(oldestPath);
+  }
+
+  for (let suffix = maxSuffix - 1; suffix >= 1; suffix -= 1) {
+    const sourcePath = `${appLogPath}.${suffix}`;
+    const targetPath = `${appLogPath}.${suffix + 1}`;
+    if (await fs.pathExists(sourcePath)) {
+      await fs.move(sourcePath, targetPath, { overwrite: true });
+    }
+  }
+
+  await fs.move(appLogPath, `${appLogPath}.1`, { overwrite: true });
+};
+
+const appendLogEntry = async (entry) => {
+  await ensureData();
+  const line = `${JSON.stringify(entry)}\n`;
+  const lineBytes = Buffer.byteLength(line, "utf8");
+  await rotateLogsIfNeeded(lineBytes);
+  await fs.appendFile(appLogPath, line, "utf8");
+};
+
+const readRecentLogs = async (limit = 200) => {
+  await ensureData();
+  const normalizedLimit = Number.isFinite(Number(limit)) ? Math.max(1, Math.floor(Number(limit))) : 200;
+
+  const logPaths = [];
+  for (let suffix = LOG_ROTATE_MAX_FILES - 1; suffix >= 1; suffix -= 1) {
+    logPaths.push(`${appLogPath}.${suffix}`);
+  }
+  logPaths.push(appLogPath);
+
+  const entries = [];
+  for (const filePath of logPaths) {
+    if (!(await fs.pathExists(filePath))) {
+      continue;
+    }
+    const content = await fs.readFile(filePath, "utf8");
+    const lines = content.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+      try {
+        entries.push(JSON.parse(line));
+      } catch {
+        // ignore malformed lines
+      }
+    }
+  }
+
+  return entries.slice(-normalizedLimit).reverse();
 };
 
 const getBackgroundPath = (ext) => path.join(dataDir, `${BACKGROUND_BASENAME}.${ext}`);
@@ -126,7 +197,8 @@ const normalizeProjectBackground = async (project) => {
 const loadProject = async () => {
   await ensureData();
   const project = await fs.readJson(projectPath);
-  const normalizedProject = await normalizeProjectBackground(project);
+  const { logs: _legacyLogs, ...projectWithoutLogs } = project;
+  const normalizedProject = await normalizeProjectBackground(projectWithoutLogs);
   if (JSON.stringify(project) !== JSON.stringify(normalizedProject)) {
     await saveProject(normalizedProject);
   }
@@ -177,14 +249,14 @@ const sanitizeMicrophonesForStorage = (microphones) =>
     return persistedMic;
   });
 
-const addLog = (project, type, details = null) => {
+const addLog = async (type, details = null) => {
   const entry = {
     id: crypto.randomUUID(),
     type,
     timestamp: new Date().toISOString(),
     details
   };
-  project.logs.unshift(entry);
+  await appendLogEntry(entry);
   return entry;
 };
 
@@ -246,7 +318,7 @@ app.post("/api/project", async (req, res) => {
       ...fontSettings
     };
   }
-  addLog(project, "save", { microphoneCount: project.microphones.length });
+  await addLog("save", { microphoneCount: project.microphones.length });
   await saveProject(project);
   res.json(withRuntimeMicStates(project));
 });
@@ -269,7 +341,15 @@ app.post("/api/microphones/:id/toggle", async (req, res) => {
   const nextState = currentState === MIC_STATE.ON ? MIC_STATE.OFF : MIC_STATE.ON;
   microphoneRuntimeStates.set(micId, nextState);
 
+  await addLog("mic_toggle", { id: micId, state: nextState, source: "run_click" });
+
   res.json({ id: micId, state: nextState });
+});
+
+app.get("/api/logs", async (req, res) => {
+  const limit = req.query.limit ?? 200;
+  const logs = await readRecentLogs(limit);
+  res.json(logs);
 });
 
 app.post("/api/log", async (req, res) => {
@@ -278,10 +358,9 @@ app.post("/api/log", async (req, res) => {
     res.status(400).json({ error: "Missing log type" });
     return;
   }
-  const project = await loadProject();
-  addLog(project, type, details ?? null);
-  await saveProject(project);
-  res.json(project.logs);
+  await addLog(type, details ?? null);
+  const logs = await readRecentLogs(200);
+  res.json(logs);
 });
 
 app.post("/api/background", backgroundUpload.single("file"), async (req, res) => {
@@ -304,7 +383,7 @@ app.post("/api/background", backgroundUpload.single("file"), async (req, res) =>
   project.background = true;
   project.backgroundExt = backgroundExt;
   project.backgroundUpdatedAt = new Date().toISOString();
-  addLog(project, "background_upload", { filename });
+  await addLog("background_upload", { filename });
   await saveProject(project);
   res.json(project);
 });
@@ -321,8 +400,7 @@ app.post("/api/export", async (req, res) => {
         : sanitizeMicrophonesForStorage(project.microphones),
     showLabels: req.body?.showLabels !== undefined ? req.body.showLabels : project.showLabels,
     micSize: req.body?.micSize !== undefined ? req.body.micSize : project.micSize,
-    fontSettings: req.body?.fontSettings !== undefined ? req.body.fontSettings : project.fontSettings,
-    logs: req.body?.logs !== undefined ? req.body.logs : project.logs
+    fontSettings: req.body?.fontSettings !== undefined ? req.body.fontSettings : project.fontSettings
   };
 
   res.attachment("project.zip");
@@ -359,9 +437,6 @@ app.post("/api/import", importUpload.single("file"), async (req, res) => {
     project = JSON.parse(projectEntry.getData().toString("utf8"));
   }
 
-  if (!Array.isArray(project.logs)) {
-    project.logs = [];
-  }
   if (typeof project.showLabels !== "boolean") {
     project.showLabels = defaultProject.showLabels;
   }
@@ -406,7 +481,7 @@ app.post("/api/import", importUpload.single("file"), async (req, res) => {
     project.backgroundUpdatedAt = null;
   }
 
-  addLog(project, "import", { assetCount: (await fs.readdir(assetsDir)).length });
+  await addLog("import", { assetCount: (await fs.readdir(assetsDir)).length });
   await saveProject(project);
   res.json(project);
 });
