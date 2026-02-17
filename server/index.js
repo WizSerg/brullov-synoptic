@@ -20,11 +20,18 @@ const logsDir = path.join(dataDir, "logs");
 const rootPackagePath = path.join(__dirname, "..", "package.json");
 const serverPackagePath = path.join(__dirname, "package.json");
 const projectPath = path.join(dataDir, "project.json");
+const authPath = path.join(dataDir, "auth.json");
 const appLogPath = path.join(logsDir, "app.log");
 const LOG_ROTATE_MAX_SIZE_BYTES = 5 * 1024 * 1024;
 const LOG_ROTATE_MAX_FILES = 5;
 const BACKGROUND_BASENAME = "background";
 const SUPPORTED_BACKGROUND_EXTENSIONS = new Set(["png", "jpg", "jpeg"]);
+const SESSION_COOKIE_NAME = "synoptic_session";
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const COOKIE_SECURE = process.env.COOKIE_SECURE === "true";
+const PASSWORD_HASH_ITERATIONS = 120000;
+const PASSWORD_HASH_KEYLEN = 64;
+const PASSWORD_HASH_DIGEST = "sha512";
 const defaultProject = {
   background: false,
   backgroundExt: null,
@@ -46,7 +53,91 @@ const MIC_STATE = {
 };
 
 const microphoneRuntimeStates = new Map();
+const sessionStore = new Map();
 let appMetadataPromise = null;
+
+const createPasswordHash = (password, salt = crypto.randomBytes(16).toString("hex")) => {
+  const hash = crypto
+    .pbkdf2Sync(password, salt, PASSWORD_HASH_ITERATIONS, PASSWORD_HASH_KEYLEN, PASSWORD_HASH_DIGEST)
+    .toString("hex");
+
+  return {
+    hash,
+    salt,
+    iterations: PASSWORD_HASH_ITERATIONS,
+    keylen: PASSWORD_HASH_KEYLEN,
+    digest: PASSWORD_HASH_DIGEST
+  };
+};
+
+const verifyPassword = (password, authConfig) => {
+  if (!password || !authConfig?.passwordHash || !authConfig?.salt) {
+    return false;
+  }
+
+  const hash = crypto
+    .pbkdf2Sync(
+      password,
+      authConfig.salt,
+      authConfig.iterations || PASSWORD_HASH_ITERATIONS,
+      authConfig.keylen || PASSWORD_HASH_KEYLEN,
+      authConfig.digest || PASSWORD_HASH_DIGEST
+    )
+    .toString("hex");
+
+  if (hash.length !== authConfig.passwordHash.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(authConfig.passwordHash, "hex"));
+};
+
+const parseCookies = (header = "") =>
+  header
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((cookies, item) => {
+      const [key, ...rest] = item.split("=");
+      cookies[key] = decodeURIComponent(rest.join("="));
+      return cookies;
+    }, {});
+
+const getSessionFromRequest = (req) => {
+  const cookies = parseCookies(req.headers.cookie || "");
+  const token = cookies[SESSION_COOKIE_NAME];
+  if (!token) {
+    return null;
+  }
+
+  const session = sessionStore.get(token);
+  if (!session) {
+    return null;
+  }
+
+  if (session.expiresAt <= Date.now()) {
+    sessionStore.delete(token);
+    return null;
+  }
+
+  return { token, ...session };
+};
+
+const setSessionCookie = (res, token) => {
+  res.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${
+      SESSION_TTL_MS / 1000
+    }${COOKIE_SECURE ? "; Secure" : ""}`
+  );
+};
+
+const clearSessionCookie = (res) => {
+  res.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${COOKIE_SECURE ? "; Secure" : ""}`
+  );
+};
 
 const readAppMetadata = async () => {
   const [rootPackage = {}, serverPackage = {}] = await Promise.all([
@@ -73,6 +164,31 @@ const ensureData = async () => {
   if (!(await fs.pathExists(projectPath))) {
     await fs.writeJson(projectPath, defaultProject, { spaces: 2 });
   }
+  if (!(await fs.pathExists(authPath))) {
+    const defaultPassword = createPasswordHash("admin");
+    await fs.writeJson(
+      authPath,
+      {
+        username: "admin",
+        passwordHash: defaultPassword.hash,
+        salt: defaultPassword.salt,
+        iterations: defaultPassword.iterations,
+        keylen: defaultPassword.keylen,
+        digest: defaultPassword.digest,
+        updatedAt: new Date().toISOString()
+      },
+      { spaces: 2 }
+    );
+  }
+};
+
+const readAuthConfig = async () => {
+  await ensureData();
+  return fs.readJson(authPath);
+};
+
+const saveAuthConfig = async (authConfig) => {
+  await fs.writeJson(authPath, authConfig, { spaces: 2 });
 };
 
 const rotateLogsIfNeeded = async (incomingEntryBytes) => {
@@ -286,12 +402,91 @@ const addLog = async (type, details = null) => {
 app.use(express.json({ limit: "10mb" }));
 app.use(cors());
 
+const requireAuth = (req, res, next) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  req.session = session;
+  next();
+};
+
 const backgroundUpload = multer({ storage: multer.memoryStorage() });
 const importUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 app.use("/assets", express.static(assetsDir));
 
-app.get("/api/background/file", async (_req, res) => {
+app.get("/api/auth/me", async (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    res.status(401).json({ authenticated: false });
+    return;
+  }
+
+  const authConfig = await readAuthConfig();
+  res.json({ authenticated: true, username: authConfig.username });
+});
+
+app.post("/api/login", async (req, res) => {
+  const { username, password } = req.body || {};
+  const authConfig = await readAuthConfig();
+  const validUsername = typeof username === "string" && username === authConfig.username;
+  const validPassword = typeof password === "string" && verifyPassword(password, authConfig);
+
+  if (!validUsername || !validPassword) {
+    res.status(401).json({ error: "Invalid credentials" });
+    return;
+  }
+
+  const token = crypto.randomBytes(32).toString("hex");
+  sessionStore.set(token, {
+    username: authConfig.username,
+    expiresAt: Date.now() + SESSION_TTL_MS
+  });
+  setSessionCookie(res, token);
+  res.json({ success: true, username: authConfig.username });
+});
+
+app.post("/api/logout", (req, res) => {
+  const session = getSessionFromRequest(req);
+  if (session?.token) {
+    sessionStore.delete(session.token);
+  }
+  clearSessionCookie(res);
+  res.json({ success: true });
+});
+
+app.post("/api/change-password", requireAuth, async (req, res) => {
+  const { oldPassword, newPassword } = req.body || {};
+  if (typeof oldPassword !== "string" || typeof newPassword !== "string" || newPassword.length < 1) {
+    res.status(400).json({ error: "Invalid password payload" });
+    return;
+  }
+
+  const authConfig = await readAuthConfig();
+  if (!verifyPassword(oldPassword, authConfig)) {
+    res.status(400).json({ error: "Old password is incorrect" });
+    return;
+  }
+
+  const nextPassword = createPasswordHash(newPassword);
+  const nextAuthConfig = {
+    username: authConfig.username,
+    passwordHash: nextPassword.hash,
+    salt: nextPassword.salt,
+    iterations: nextPassword.iterations,
+    keylen: nextPassword.keylen,
+    digest: nextPassword.digest,
+    updatedAt: new Date().toISOString()
+  };
+
+  await saveAuthConfig(nextAuthConfig);
+  await addLog("password_change", { username: authConfig.username });
+  res.json({ success: true });
+});
+
+app.get("/api/background/file", requireAuth, async (_req, res) => {
   const project = await loadProject();
   if (!project.background || !project.backgroundExt) {
     res.status(404).json({ error: "No background image" });
@@ -307,13 +502,13 @@ app.get("/api/background/file", async (_req, res) => {
   res.sendFile(backgroundPath);
 });
 
-app.get("/api/project", async (_req, res) => {
+app.get("/api/project", requireAuth, async (_req, res) => {
   const project = await loadProject();
   reconcileRuntimeMicStates(project.microphones);
   res.json(withRuntimeMicStates(project));
 });
 
-app.post("/api/project", async (req, res) => {
+app.post("/api/project", requireAuth, async (req, res) => {
   const project = await loadProject();
   const { background, microphones } = req.body || {};
   const { showLabels, micSize, fontSettings } = req.body || {};
@@ -346,7 +541,7 @@ app.post("/api/project", async (req, res) => {
   res.json(withRuntimeMicStates(project));
 });
 
-app.post("/api/microphones/:id/toggle", async (req, res) => {
+app.post("/api/microphones/:id/toggle", requireAuth, async (req, res) => {
   const micId = req.params.id;
   if (!micId) {
     res.status(400).json({ error: "Missing microphone id" });
@@ -369,13 +564,13 @@ app.post("/api/microphones/:id/toggle", async (req, res) => {
   res.json({ id: micId, state: nextState });
 });
 
-app.get("/api/logs", async (req, res) => {
+app.get("/api/logs", requireAuth, async (req, res) => {
   const limit = req.query.limit ?? 200;
   const logs = await readRecentLogs(limit);
   res.json(logs);
 });
 
-app.post("/api/log", async (req, res) => {
+app.post("/api/log", requireAuth, async (req, res) => {
   const { type, details } = req.body || {};
   if (!type) {
     res.status(400).json({ error: "Missing log type" });
@@ -386,7 +581,7 @@ app.post("/api/log", async (req, res) => {
   res.json(logs);
 });
 
-app.post("/api/background", backgroundUpload.single("file"), async (req, res) => {
+app.post("/api/background", requireAuth, backgroundUpload.single("file"), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: "No file uploaded" });
     return;
@@ -411,7 +606,7 @@ app.post("/api/background", backgroundUpload.single("file"), async (req, res) =>
   res.json(project);
 });
 
-app.post("/api/export", async (req, res) => {
+app.post("/api/export", requireAuth, async (req, res) => {
   const project = await loadProject();
   const exportProject = {
     ...project,
@@ -442,7 +637,7 @@ app.post("/api/export", async (req, res) => {
   await archive.finalize();
 });
 
-app.post("/api/import", importUpload.single("file"), async (req, res) => {
+app.post("/api/import", requireAuth, importUpload.single("file"), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: "No file uploaded" });
     return;
@@ -509,7 +704,7 @@ app.post("/api/import", importUpload.single("file"), async (req, res) => {
   res.json(project);
 });
 
-app.get("/api/about", async (_req, res) => {
+app.get("/api/about", requireAuth, async (_req, res) => {
   const appMeta = await getAppMetadata();
   res.json({
     appName: appMeta.name,
@@ -524,8 +719,27 @@ app.get("/api/about", async (_req, res) => {
 
 if (process.env.NODE_ENV === "production") {
   const clientDist = path.join(__dirname, "..", "client", "dist");
+  app.use((req, res, next) => {
+    if (req.path.startsWith("/api") || req.path.startsWith("/assets") || req.path === "/login") {
+      next();
+      return;
+    }
+
+    const session = getSessionFromRequest(req);
+    if (!session) {
+      res.redirect("/login");
+      return;
+    }
+
+    next();
+  });
   app.use(express.static(clientDist));
-  app.get("*", (_req, res) => {
+  app.get("*", (req, res) => {
+    const session = getSessionFromRequest(req);
+    if (!session && req.path !== "/login") {
+      res.redirect("/login");
+      return;
+    }
     res.sendFile(path.join(clientDist, "index.html"));
   });
 }

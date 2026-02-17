@@ -25,6 +25,36 @@ body {
   flex-direction: column;
 }
 
+.auth-page {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.auth-card {
+  width: min(380px, 100%);
+  background: #ffffff;
+  border: 1px solid #e4e7eb;
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-card h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+
+.auth-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 14px;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -300,6 +330,19 @@ body {
 .settings-modal h2 {
   font-size: 18px;
   margin: 0;
+}
+
+.password-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid #e4e7eb;
+  padding-top: 12px;
+}
+
+.password-form h3 {
+  margin: 0;
+  font-size: 16px;
 }
 
 .settings-grid {
