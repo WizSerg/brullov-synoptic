@@ -36,7 +36,7 @@ Then open http://localhost:3001 (the server serves the built UI).
 - Microphone positions are stored as **relative coordinates** (0..1).
 - Save/load the project locally (filesystem JSON + assets).
 - Export the project as a zip (`project.json` + assets) and import it back.
-- Log actions (add/delete mic, save, import/export, background upload).
+- Log actions (add/delete mic, save, import/export, background upload, mic toggles) into rotating files under `server/data/logs/`.
 
 ## Acceptance criteria mapping
 
@@ -50,7 +50,7 @@ Then open http://localhost:3001 (the server serves the built UI).
 | Relative coordinates | Stored as `x`, `y` in range 0..1 in `project.json`. |
 | Save/load locally | Express server stores `server/data/project.json` + assets. |
 | Export/import zip | Export endpoint streams zip; import uploads zip and restores files. |
-| Log actions | Activity log panel shows actions from server log. |
+| Log actions | Activity log panel reads recent entries from rotating server log files (`server/data/logs/app.log*`). |
 
 ## Project structure
 
