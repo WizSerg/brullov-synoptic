@@ -11,8 +11,8 @@ const DEFAULT_PROJECT = {
   showLabels: true,
   micSize: 32,
   fontSettings: {
-    seatTextFamily: "system-ui",
-    seatTextWeight: "bold",
+    micTextFamily: "system-ui",
+    micTextWeight: "bold",
     labelFamily: "system-ui",
     labelWeight: "normal"
   }
@@ -56,35 +56,35 @@ const MIN_MIC_SIZE = 20;
 const MAX_MIC_SIZE = 64;
 const MIC_SIZE_STEP = 4;
 
-const getNextSeatNumber = (microphones) => {
-  if (!Array.isArray(microphones) || microphones.length === 0) {
-    return 1;
-  }
-  const maxSeat = microphones.reduce((max, mic) => {
-    if (typeof mic.seatNumber === "number") {
-      return Math.max(max, mic.seatNumber);
-    }
-    return max;
-  }, 0);
-  return maxSeat + 1;
-};
-
 const normalizeProject = (data) => {
   const microphones = Array.isArray(data.microphones) ? data.microphones : [];
-  let nextSeatNumber = getNextSeatNumber(microphones);
-  const normalizedMics = microphones.map((mic) => {
-    const seatNumber = typeof mic.seatNumber === "number" ? mic.seatNumber : nextSeatNumber;
-    if (typeof mic.seatNumber !== "number") {
-      nextSeatNumber += 1;
-    }
-    return {
-      ...mic,
-      seatNumber,
-      seatText: typeof mic.seatText === "string" ? mic.seatText : `${seatNumber}`,
-      label: typeof mic.label === "string" ? mic.label : "",
-      state: mic.state === MIC_STATE.ON ? MIC_STATE.ON : MIC_STATE.OFF
-    };
-  });
+  const normalizedMics = microphones
+    .map((mic) => {
+      const normalizedMicId = typeof mic.micId === "string" && mic.micId.trim()
+        ? mic.micId.trim()
+        : typeof mic.id === "string" && mic.id.trim()
+          ? mic.id.trim()
+          : null;
+      if (!normalizedMicId) {
+        return null;
+      }
+      return {
+        ...mic,
+        id: typeof mic.id === "string" && mic.id ? mic.id : crypto.randomUUID(),
+        micId: normalizedMicId,
+        micText:
+          typeof mic.micText === "string"
+            ? mic.micText
+            : typeof mic.seatText === "string"
+              ? mic.seatText
+              : normalizedMicId,
+        label: typeof mic.label === "string" ? mic.label : "",
+        state: mic.state === MIC_STATE.ON ? MIC_STATE.ON : MIC_STATE.OFF,
+        sizeScale: Number.isFinite(Number(mic.sizeScale)) ? Number(mic.sizeScale) : 1,
+        buttonStyleCss: typeof mic.buttonStyleCss === "string" ? mic.buttonStyleCss : ""
+      };
+    })
+    .filter(Boolean);
   return {
     ...DEFAULT_PROJECT,
     ...data,
@@ -98,7 +98,8 @@ const normalizeProject = (data) => {
     fontSettings: {
       ...DEFAULT_PROJECT.fontSettings,
       ...(data.fontSettings || {})
-    }
+    },
+    micButtonStyleCss: typeof data.micButtonStyleCss === "string" ? data.micButtonStyleCss : ""
   };
 };
 
@@ -285,11 +286,13 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
       id: crypto.randomUUID(),
       x: 0.5,
       y: 0.5,
-      seatNumber: getNextSeatNumber(microphones),
+      micId: `mic-${microphones.length + 1}`,
+      micText: `mic-${microphones.length + 1}`,
+      label: "",
+      sizeScale: 1,
+      buttonStyleCss: "",
       state: MIC_STATE.OFF
     };
-    newMic.seatText = `${newMic.seatNumber}`;
-    newMic.label = "";
     setProject((prev) => ({
       ...prev,
       microphones: [...prev.microphones, newMic]
@@ -309,7 +312,8 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
           microphones: projectToSave.microphones,
           showLabels: projectToSave.showLabels,
           micSize: projectToSave.micSize,
-          fontSettings: projectToSave.fontSettings
+          fontSettings: projectToSave.fontSettings,
+          micButtonStyleCss: projectToSave.micButtonStyleCss
         })
       });
       if (!response.ok) {
@@ -335,7 +339,8 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
         microphones: project.microphones,
         showLabels: project.showLabels,
         micSize: project.micSize,
-        fontSettings: project.fontSettings
+        fontSettings: project.fontSettings,
+        micButtonStyleCss: project.micButtonStyleCss
       })
     });
     if (!response.ok) {
@@ -392,21 +397,21 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
     setDirty(true);
   };
 
-  const handleMicClick = async (micId) => {
+  const handleMicClick = async (mic) => {
     if (mode !== "edit") {
-      const response = await fetch(`/api/microphones/${micId}/toggle`, { method: "POST" });
+      const response = await fetch(`/api/microphones/${encodeURIComponent(mic.micId)}/toggle`, { method: "POST" });
       if (!response.ok) {
         return;
       }
       const data = await response.json();
       setProject((prev) => ({
         ...prev,
-        microphones: prev.microphones.map((item) => (item.id === data.id ? { ...item, state: data.state } : item))
+        microphones: prev.microphones.map((item) => (item.micId === data.id ? { ...item, state: data.state } : item))
       }));
       return;
     }
 
-    setSelectedMicId(micId);
+    setSelectedMicId(mic.id);
   };
 
   const handleDeleteMic = () => {
@@ -417,7 +422,7 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
     if (!mic) {
       return;
     }
-    const confirmed = window.confirm(`Delete microphone ${mic.seatNumber}?`);
+    const confirmed = window.confirm(`Delete microphone ${mic.micId}?`);
     if (!confirmed) {
       return;
     }
@@ -426,7 +431,7 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
       microphones: prev.microphones.filter((item) => item.id !== mic.id)
     }));
     setDirty(true);
-    logAction("delete_mic", { id: mic.id, seatNumber: mic.seatNumber });
+    logAction("delete_mic", { id: mic.id, micId: mic.micId });
     setSelectedMicId(null);
   };
 
@@ -436,11 +441,50 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
     }
     setProject((prev) => ({
       ...prev,
-      microphones: prev.microphones.map((item) => (item.id === selectedMicId ? { ...item, [field]: value } : item))
+      microphones: prev.microphones.map((item) => {
+        if (item.id !== selectedMicId) {
+          return item;
+        }
+
+        if (field === "micId") {
+          const nextMicId = value.trim();
+          const shouldSyncText = (item.micText ?? "") === (item.micId ?? "");
+          return {
+            ...item,
+            micId: nextMicId,
+            micText: shouldSyncText ? nextMicId : item.micText
+          };
+        }
+
+        return { ...item, [field]: value };
+      })
     }));
     setDirty(true);
   };
 
+
+  const parseCssDeclarations = (cssText) => {
+    if (typeof cssText !== "string") {
+      return {};
+    }
+
+    return cssText
+      .split(";")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .reduce((acc, declaration) => {
+        const separator = declaration.indexOf(":");
+        if (separator === -1) {
+          return acc;
+        }
+        const key = declaration.slice(0, separator).trim().toLowerCase();
+        const value = declaration.slice(separator + 1).trim();
+        if (key && value) {
+          acc[key] = value;
+        }
+        return acc;
+      }, {});
+  };
 
   const handleFontSettingChange = (field, value) => {
     setProject((prev) => ({
@@ -609,10 +653,13 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
                     dash={[6, 4]}
                   />
                 )}
-                {microphones.map((mic, index) => {
+                {microphones.map((mic) => {
                   const absoluteX = mic.x * stageDimensions.width;
                   const absoluteY = mic.y * stageDimensions.height;
-                  const micRadius = project.micSize / 2;
+                  const micSize = clamp(project.micSize * (mic.sizeScale || 1), MIN_MIC_SIZE, MAX_MIC_SIZE * 3);
+                  const micRadius = micSize / 2;
+                  const baseStyle = parseCssDeclarations(project.micButtonStyleCss);
+                  const micStyle = { ...baseStyle, ...parseCssDeclarations(mic.buttonStyleCss) };
                   const isSelected = mode === "edit" && mic.id === selectedMicId;
                   return (
                     <Group
@@ -621,29 +668,32 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
                       y={absoluteY}
                       draggable={mode === "edit"}
                       onDragEnd={(event) => handleDragEnd(event, mic)}
-                      onClick={() => handleMicClick(mic.id)}
-                      onTap={() => handleMicClick(mic.id)}
+                      onClick={() => handleMicClick(mic)}
+                      onTap={() => handleMicClick(mic)}
                     >
                       <Circle
                         radius={micRadius}
-                        fill={
-                          mode === "edit" ? "#4c6ef5" : mic.state === MIC_STATE.ON ? "#2f9e44" : "#868e96"
-                        }
+                        fill={micStyle["background-color"] || (mode === "edit" ? "#4c6ef5" : mic.state === MIC_STATE.ON ? "#2f9e44" : "#868e96")}
+                        shadowColor={micStyle["box-shadow-color"] || "#1f2933"}
+                        shadowBlur={Number(micStyle["box-shadow-blur"]) || 0}
+                        shadowOpacity={Number(micStyle["box-shadow-opacity"]) || 0}
+                        shadowOffsetX={Number(micStyle["box-shadow-offset-x"]) || 0}
+                        shadowOffsetY={Number(micStyle["box-shadow-offset-y"]) || 0}
                         stroke={isSelected ? "#f59f00" : undefined}
                         strokeWidth={isSelected ? 3 : 0}
                       />
                       <Text
-                        text={mic.seatText || `${mic.seatNumber ?? index + 1}`}
+                        text={mic.micText || mic.micId}
                         x={-micRadius}
                         y={-micRadius}
-                        width={project.micSize}
-                        height={project.micSize}
+                        width={micSize}
+                        height={micSize}
                         align="center"
                         verticalAlign="middle"
-                        fontSize={Math.max(12, Math.round(project.micSize * 0.6))}
-                        fontFamily={project.fontSettings.seatTextFamily}
-                        fontStyle={project.fontSettings.seatTextWeight}
-                        fill="#ffffff"
+                        fontSize={Math.max(12, Math.round(micSize * 0.6))}
+                        fontFamily={project.fontSettings.micTextFamily}
+                        fontStyle={project.fontSettings.micTextWeight}
+                        fill={micStyle.color || "#ffffff"}
                       />
                       {project.showLabels && mic.label && (
                         <Text
@@ -670,17 +720,26 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
               <h2>Properties</h2>
               <div className="properties-panel__body">
                 <div className="property-row">
-                  <span className="property-label">Seat number</span>
-                  <span className="property-value">{selectedMic.seatNumber}</span>
+                  <span className="property-label">Mic ID</span>
+                  <span className="property-value">{selectedMic.micId}</span>
                 </div>
                 <label className="property-field">
-                  <span className="property-label">Seat text</span>
+                  <span className="property-label">Mic text</span>
                   <input
                     className="input"
                     type="text"
-                    value={selectedMic.seatText ?? ""}
-                    onChange={(event) => handleSelectedMicChange("seatText", event.target.value)}
-                    placeholder="e.g. 1, CHAIRMAN"
+                    value={selectedMic.micText ?? ""}
+                    onChange={(event) => handleSelectedMicChange("micText", event.target.value)}
+                    placeholder="e.g. CHAIRMAN"
+                  />
+                </label>
+                <label className="property-field">
+                  <span className="property-label">Mic ID</span>
+                  <input
+                    className="input"
+                    type="text"
+                    value={selectedMic.micId ?? ""}
+                    onChange={(event) => handleSelectedMicChange("micId", event.target.value)}
                   />
                 </label>
                 <label className="property-field">
@@ -691,6 +750,28 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
                     value={selectedMic.label ?? ""}
                     onChange={(event) => handleSelectedMicChange("label", event.target.value)}
                     placeholder="Shown when Labels are On"
+                  />
+                </label>
+                <label className="property-field">
+                  <span className="property-label">Size scale</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min="0.5"
+                    max="3"
+                    step="0.1"
+                    value={selectedMic.sizeScale ?? 1}
+                    onChange={(event) => handleSelectedMicChange("sizeScale", Number(event.target.value) || 1)}
+                  />
+                </label>
+                <label className="property-field">
+                  <span className="property-label">Mic button CSS override</span>
+                  <textarea
+                    className="input"
+                    value={selectedMic.buttonStyleCss ?? ""}
+                    onChange={(event) => handleSelectedMicChange("buttonStyleCss", event.target.value)}
+                    placeholder="background-color: #334155; color: #fff; box-shadow-blur: 6;"
+                    rows={4}
                   />
                 </label>
                 <button type="button" className="button button--danger" onClick={handleDeleteMic}>
@@ -750,11 +831,11 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
                 </select>
               </label>
               <label className="property-field">
-                <span className="property-label">Mic seat text font</span>
+                <span className="property-label">Mic text font</span>
                 <select
                   className="input"
-                  value={project.fontSettings.seatTextFamily}
-                  onChange={(event) => handleFontSettingChange("seatTextFamily", event.target.value)}
+                  value={project.fontSettings.micTextFamily}
+                  onChange={(event) => handleFontSettingChange("micTextFamily", event.target.value)}
                 >
                   {FONT_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -764,15 +845,28 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
                 </select>
               </label>
               <label className="property-field">
-                <span className="property-label">Mic seat text weight</span>
+                <span className="property-label">Mic text weight</span>
                 <select
                   className="input"
-                  value={project.fontSettings.seatTextWeight}
-                  onChange={(event) => handleFontSettingChange("seatTextWeight", event.target.value)}
+                  value={project.fontSettings.micTextWeight}
+                  onChange={(event) => handleFontSettingChange("micTextWeight", event.target.value)}
                 >
                   <option value="normal">Normal</option>
                   <option value="bold">Bold</option>
                 </select>
+              </label>
+              <label className="property-field">
+                <span className="property-label">Global mic button CSS</span>
+                <textarea
+                  className="input"
+                  value={project.micButtonStyleCss ?? ""}
+                  onChange={(event) => {
+                    setProject((prev) => ({ ...prev, micButtonStyleCss: event.target.value }));
+                    setDirty(true);
+                  }}
+                  placeholder="background-color: #4c6ef5; color: #fff; box-shadow-blur: 4;"
+                  rows={4}
+                />
               </label>
               <label className="property-field">
                 <span className="property-label">Mic label font</span>

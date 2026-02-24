@@ -71,7 +71,8 @@ A lightweight TCP server is available for external integrations.
 
 - Fixed TCP port: `31415`.
 - Transport: plain TCP, ASCII line protocol.
-- Line ending: `\n` or `\r\n`.
+- Server line ending for responses/events: `\n\r`.
+- Accepted client command line ending: `\n` or `\r\n`.
 - Multiple clients can stay connected simultaneously.
 - No authentication (intended for an isolated trusted network).
 
@@ -85,15 +86,15 @@ On connect, the server sends:
 
 ### Commands (client -> server)
 
-- `SET MIC <id> TOGGLE`
+- `SET MIC <micId> TOGGLE`
 
 Toggles microphone runtime state and broadcasts event to all connected TCP clients.
 
 ### Events (server -> all connected clients)
 
-- `EVENT MIC <id> ON`
-- `EVENT MIC <id> OFF`
-- `EVENT MIC <id> NOT_FOUND`
+- `EVENT MIC <micId> ON`
+- `EVENT MIC <micId> OFF`
+- `EVENT MIC <micId> NOT_FOUND`
 
 Events are broadcast for any microphone toggle initiated from web UI API or TCP command path.
 

@@ -41,9 +41,10 @@ const defaultProject = {
   microphones: [],
   showLabels: true,
   micSize: 32,
+  micButtonStyleCss: "",
   fontSettings: {
-    seatTextFamily: "system-ui",
-    seatTextWeight: "bold",
+    micTextFamily: "system-ui",
+    micTextWeight: "bold",
     labelFamily: "system-ui",
     labelWeight: "normal"
   }
@@ -63,7 +64,7 @@ const sendTcpLine = (socket, message) => {
   if (!socket || socket.destroyed) {
     return;
   }
-  socket.write(`${message}\n`);
+  socket.write(`${message}\n\r`);
 };
 
 const broadcastTcpLine = (message) => {
@@ -370,7 +371,7 @@ const withRuntimeMicStates = (project) => {
   const microphones = Array.isArray(project.microphones)
     ? project.microphones.map((mic) => ({
         ...mic,
-        state: normalizeRuntimeMicState(microphoneRuntimeStates.get(mic.id))
+        state: normalizeRuntimeMicState(microphoneRuntimeStates.get(mic.micId))
       }))
     : [];
   return {
@@ -382,12 +383,12 @@ const withRuntimeMicStates = (project) => {
 const reconcileRuntimeMicStates = (microphones) => {
   const incomingIds = new Set();
   for (const mic of microphones || []) {
-    if (!mic?.id) {
+    if (!mic?.micId) {
       continue;
     }
-    incomingIds.add(mic.id);
-    if (!microphoneRuntimeStates.has(mic.id)) {
-      microphoneRuntimeStates.set(mic.id, MIC_STATE.OFF);
+    incomingIds.add(mic.micId);
+    if (!microphoneRuntimeStates.has(mic.micId)) {
+      microphoneRuntimeStates.set(mic.micId, MIC_STATE.OFF);
     }
   }
 
@@ -411,7 +412,7 @@ const toggleMicrophoneById = async (micId, source) => {
   }
 
   const project = await loadProject();
-  const micExists = Array.isArray(project.microphones) && project.microphones.some((mic) => mic.id === micId);
+  const micExists = Array.isArray(project.microphones) && project.microphones.some((mic) => mic.micId === micId);
   if (!micExists) {
     emitMicEvent(micId, "NOT_FOUND");
     return { status: "NOT_FOUND", id: micId };
@@ -429,9 +430,27 @@ const toggleMicrophoneById = async (micId, source) => {
 
 const sanitizeMicrophonesForStorage = (microphones) =>
   (microphones || []).map((mic) => {
-    const { state: _state, ...persistedMic } = mic;
-    return persistedMic;
-  });
+    const normalizedMicId = typeof mic.micId === "string" && mic.micId.trim() ? mic.micId.trim() : null;
+    if (!normalizedMicId) {
+      return null;
+    }
+
+    return {
+      id: typeof mic.id === "string" && mic.id ? mic.id : crypto.randomUUID(),
+      micId: normalizedMicId,
+      micText:
+        typeof mic.micText === "string"
+          ? mic.micText
+          : typeof mic.seatText === "string"
+            ? mic.seatText
+            : normalizedMicId,
+      label: typeof mic.label === "string" ? mic.label : "",
+      x: Number.isFinite(Number(mic.x)) ? Number(mic.x) : 0.5,
+      y: Number.isFinite(Number(mic.y)) ? Number(mic.y) : 0.5,
+      sizeScale: Number.isFinite(Number(mic.sizeScale)) ? Number(mic.sizeScale) : 1,
+      buttonStyleCss: typeof mic.buttonStyleCss === "string" ? mic.buttonStyleCss : ""
+    };
+  }).filter(Boolean);
 
 const addLog = async (type, details = null) => {
   const entry = {
@@ -556,7 +575,7 @@ app.get("/api/project", requireAuth, async (_req, res) => {
 app.post("/api/project", requireAuth, async (req, res) => {
   const project = await loadProject();
   const { background, microphones } = req.body || {};
-  const { showLabels, micSize, fontSettings } = req.body || {};
+  const { showLabels, micSize, fontSettings, micButtonStyleCss } = req.body || {};
   if (background !== undefined) {
     project.background = Boolean(background);
     if (!project.background) {
@@ -580,6 +599,9 @@ app.post("/api/project", requireAuth, async (req, res) => {
       ...defaultProject.fontSettings,
       ...fontSettings
     };
+  }
+  if (micButtonStyleCss !== undefined) {
+    project.micButtonStyleCss = typeof micButtonStyleCss === "string" ? micButtonStyleCss : "";
   }
   await addLog("save", { microphoneCount: project.microphones.length });
   await saveProject(project);
@@ -657,6 +679,8 @@ app.post("/api/export", requireAuth, async (req, res) => {
         : sanitizeMicrophonesForStorage(project.microphones),
     showLabels: req.body?.showLabels !== undefined ? req.body.showLabels : project.showLabels,
     micSize: req.body?.micSize !== undefined ? req.body.micSize : project.micSize,
+    micButtonStyleCss:
+      req.body?.micButtonStyleCss !== undefined ? req.body.micButtonStyleCss : project.micButtonStyleCss,
     fontSettings: req.body?.fontSettings !== undefined ? req.body.fontSettings : project.fontSettings
   };
 
@@ -706,6 +730,7 @@ app.post("/api/import", requireAuth, importUpload.single("file"), async (req, re
     ...defaultProject.fontSettings,
     ...(project.fontSettings || {})
   };
+  project.micButtonStyleCss = typeof project.micButtonStyleCss === "string" ? project.micButtonStyleCss : "";
 
   let importedBackgroundExt = null;
   let importedBackgroundEntry = null;
