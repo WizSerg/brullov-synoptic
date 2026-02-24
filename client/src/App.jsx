@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Stage, Layer, Image as KonvaImage, Circle, Group, Text, Rect } from "react-konva";
 import useImage from "use-image";
+import { languageOptions, translate } from "./i18n";
 
 const DEFAULT_PROJECT = {
   background: false,
@@ -101,7 +102,7 @@ const normalizeProject = (data) => {
   };
 };
 
-const App = ({ onLogout = () => {}, username = "admin" }) => {
+const App = ({ onLogout = () => {}, username = "admin", language = "en", onLanguageChange = () => {} }) => {
   const [mode, setMode] = useState("edit");
   const [project, setProject] = useState(DEFAULT_PROJECT);
   const [dirty, setDirty] = useState(false);
@@ -126,6 +127,7 @@ const App = ({ onLogout = () => {}, username = "admin" }) => {
   const [passwordStatus, setPasswordStatus] = useState("");
 
   const microphones = project.microphones ?? [];
+  const t = (key, params) => translate(language, key, params);
 
   const stageDimensions = useMemo(() => {
     if (!containerRef.current) {
@@ -513,26 +515,26 @@ const App = ({ onLogout = () => {}, username = "admin" }) => {
     <div className="app">
       <header className="toolbar">
         <div className="toolbar__group">
-          <span className={`mode-badge mode-badge--${mode}`}>{mode === "edit" ? "Edit mode" : "Run mode"}</span>
+          <span className={`mode-badge mode-badge--${mode}`}>{mode === "edit" ? t("mode.edit") : t("mode.run")}</span>
           <button
             type="button"
             className="button"
             onClick={() => setMode((prev) => (prev === "edit" ? "run" : "edit"))}
           >
-            Toggle mode
+            {t("mode.toggle")}
           </button>
-          <span className="dirty-indicator">{dirty ? "Unsaved changes" : "All changes saved"}</span>
+          <span className="dirty-indicator">{dirty ? t("status.unsaved") : t("status.saved")}</span>
         </div>
         <div className="toolbar__group">
-          <span className="dirty-indicator">User: {username}</span>
+          <span className="dirty-indicator">{t("user.label", { username })}</span>
           <button type="button" className="button button--secondary" onClick={() => setShowLogs(true)}>
-            Logs
+            {t("toolbar.logs")}
           </button>
           <button type="button" className="button button--secondary" onClick={() => setShowSettings(true)}>
-            Settings
+            {t("toolbar.settings")}
           </button>
           <button type="button" className="button button--secondary" onClick={() => setShowAbout(true)}>
-            About
+            {t("toolbar.about")}
           </button>
           <button
             type="button"
@@ -542,7 +544,7 @@ const App = ({ onLogout = () => {}, username = "admin" }) => {
               setDirty(true);
             }}
           >
-            Labels: {project.showLabels ? "On" : "Off"}
+            {t("toolbar.labels", { state: project.showLabels ? t("common.on") : t("common.off") })}
           </button>
           <button
             type="button"
@@ -571,22 +573,22 @@ const App = ({ onLogout = () => {}, username = "admin" }) => {
             +
           </button>
           <button type="button" className="button button--secondary" onClick={onLogout}>
-            Logout
+            {t("toolbar.logout")}
           </button>
         </div>
         <div className="toolbar__group">
           <label className="button button--secondary">
-            Upload background
+            {t("toolbar.uploadBackground")}
             <input type="file" accept="image/png, image/jpeg" onChange={handleBackgroundUpload} hidden />
           </label>
           <button type="button" className="button" onClick={handleAddMic} disabled={mode !== "edit"}>
-            Add microphone
+            {t("toolbar.addMicrophone")}
           </button>
           <button type="button" className="button" onClick={handleExport}>
-            Export zip
+            {t("toolbar.exportZip")}
           </button>
           <label className="button button--secondary">
-            Import zip
+            {t("toolbar.importZip")}
             <input type="file" accept=".zip" onChange={handleImport} hidden />
           </label>
         </div>
@@ -661,7 +663,7 @@ const App = ({ onLogout = () => {}, username = "admin" }) => {
                 })}
               </Layer>
             </Stage>
-            {!project.background && <div className="canvas-placeholder">Upload a background image to start.</div>}
+            {!project.background && <div className="canvas-placeholder">{t("canvas.uploadPrompt")}</div>}
           </div>
           {showPropertiesOverlay && (
             <aside className="properties-panel properties-panel--overlay">
@@ -708,9 +710,9 @@ const App = ({ onLogout = () => {}, username = "admin" }) => {
             aria-label="Activity log"
             onClick={(event) => event.stopPropagation()}
           >
-            <h2>Activity log</h2>
+            <h2>{t("log.title")}</h2>
             <ul>
-              {logs.length === 0 && <li className="log-empty">No actions yet.</li>}
+              {logs.length === 0 && <li className="log-empty">{t("log.empty")}</li>}
               {logs.map((entry) => (
                 <li key={entry.id}>
                   <span className="log-title">{logLabel(entry)}</span>
@@ -720,7 +722,7 @@ const App = ({ onLogout = () => {}, username = "admin" }) => {
             </ul>
             <div className="log-modal__actions">
               <button type="button" className="button button--secondary" onClick={() => setShowLogs(false)}>
-                Close
+                {t("settings.close")}
               </button>
             </div>
           </div>
@@ -735,8 +737,18 @@ const App = ({ onLogout = () => {}, username = "admin" }) => {
             aria-label="Font settings"
             onClick={(event) => event.stopPropagation()}
           >
-            <h2>Settings</h2>
+            <h2>{t("settings.title")}</h2>
             <div className="settings-grid">
+              <label className="property-field">
+                <span className="property-label">{t("settings.language")}</span>
+                <select className="input" value={language} onChange={(event) => onLanguageChange(event.target.value)}>
+                  {languageOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="property-field">
                 <span className="property-label">Mic seat text font</span>
                 <select
