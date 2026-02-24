@@ -7,6 +7,7 @@ import archiver from "archiver";
 import AdmZip from "adm-zip";
 import crypto from "node:crypto";
 import os from "node:os";
+import net from "node:net";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -14,6 +15,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const TCP_INTEGRATION_PORT = 31415;
 const dataDir = path.join(__dirname, "data");
 const assetsDir = path.join(dataDir, "assets");
 const logsDir = path.join(dataDir, "logs");
@@ -55,6 +57,20 @@ const MIC_STATE = {
 const microphoneRuntimeStates = new Map();
 const sessionStore = new Map();
 let appMetadataPromise = null;
+const tcpClients = new Set();
+
+const sendTcpLine = (socket, message) => {
+  if (!socket || socket.destroyed) {
+    return;
+  }
+  socket.write(`${message}\n`);
+};
+
+const broadcastTcpLine = (message) => {
+  for (const socket of tcpClients) {
+    sendTcpLine(socket, message);
+  }
+};
 
 const createPasswordHash = (password, salt = crypto.randomBytes(16).toString("hex")) => {
   const hash = crypto
@@ -382,6 +398,35 @@ const reconcileRuntimeMicStates = (microphones) => {
   }
 };
 
+const emitMicEvent = (micId, state) => {
+  if (!micId || !state) {
+    return;
+  }
+  broadcastTcpLine(`EVENT MIC ${micId} ${state}`);
+};
+
+const toggleMicrophoneById = async (micId, source) => {
+  if (!micId) {
+    return { status: "BAD_REQUEST" };
+  }
+
+  const project = await loadProject();
+  const micExists = Array.isArray(project.microphones) && project.microphones.some((mic) => mic.id === micId);
+  if (!micExists) {
+    emitMicEvent(micId, "NOT_FOUND");
+    return { status: "NOT_FOUND", id: micId };
+  }
+
+  const currentState = normalizeRuntimeMicState(microphoneRuntimeStates.get(micId));
+  const nextState = currentState === MIC_STATE.ON ? MIC_STATE.OFF : MIC_STATE.ON;
+  microphoneRuntimeStates.set(micId, nextState);
+
+  await addLog("mic_toggle", { id: micId, state: nextState, source });
+  emitMicEvent(micId, nextState);
+
+  return { status: "OK", id: micId, state: nextState };
+};
+
 const sanitizeMicrophonesForStorage = (microphones) =>
   (microphones || []).map((mic) => {
     const { state: _state, ...persistedMic } = mic;
@@ -543,25 +588,19 @@ app.post("/api/project", requireAuth, async (req, res) => {
 
 app.post("/api/microphones/:id/toggle", requireAuth, async (req, res) => {
   const micId = req.params.id;
-  if (!micId) {
+  const result = await toggleMicrophoneById(micId, "run_click");
+
+  if (result.status === "BAD_REQUEST") {
     res.status(400).json({ error: "Missing microphone id" });
     return;
   }
 
-  const project = await loadProject();
-  const micExists = Array.isArray(project.microphones) && project.microphones.some((mic) => mic.id === micId);
-  if (!micExists) {
+  if (result.status === "NOT_FOUND") {
     res.status(404).json({ error: "Microphone not found" });
     return;
   }
 
-  const currentState = normalizeRuntimeMicState(microphoneRuntimeStates.get(micId));
-  const nextState = currentState === MIC_STATE.ON ? MIC_STATE.OFF : MIC_STATE.ON;
-  microphoneRuntimeStates.set(micId, nextState);
-
-  await addLog("mic_toggle", { id: micId, state: nextState, source: "run_click" });
-
-  res.json({ id: micId, state: nextState });
+  res.json({ id: result.id, state: result.state });
 });
 
 app.get("/api/logs", requireAuth, async (req, res) => {
@@ -717,6 +756,61 @@ app.get("/api/about", requireAuth, async (_req, res) => {
   });
 });
 
+const tcpServer = net.createServer((socket) => {
+  socket.setEncoding("ascii");
+  tcpClients.add(socket);
+
+  getAppMetadata()
+    .then((appMeta) => {
+      sendTcpLine(socket, `RMS SYNOPTIC/${appMeta.version}`);
+    })
+    .catch(() => {
+      sendTcpLine(socket, "RMS SYNOPTIC/unknown");
+    });
+
+  let buffer = "";
+
+  socket.on("data", async (chunk) => {
+    buffer += chunk;
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        continue;
+      }
+
+      const match = line.match(/^SET MIC (\S+) TOGGLE$/);
+      if (!match) {
+        continue;
+      }
+
+      const micId = match[1];
+      try {
+        await toggleMicrophoneById(micId, "tcp_client");
+      } catch (error) {
+        console.error("TCP command handling error", error);
+      }
+    }
+  });
+
+  const handleDisconnect = () => {
+    tcpClients.delete(socket);
+  };
+
+  socket.on("close", handleDisconnect);
+  socket.on("end", handleDisconnect);
+  socket.on("error", (error) => {
+    tcpClients.delete(socket);
+    console.error("TCP client socket error", error);
+  });
+});
+
+tcpServer.on("error", (error) => {
+  console.error("TCP integration server error", error);
+});
+
 if (process.env.NODE_ENV === "production") {
   const clientDist = path.join(__dirname, "..", "client", "dist");
   app.use((req, res, next) => {
@@ -746,4 +840,8 @@ if (process.env.NODE_ENV === "production") {
 
 app.listen(PORT, () => {
   console.log(`Synoptic server running on port ${PORT}`);
+});
+
+tcpServer.listen(TCP_INTEGRATION_PORT, () => {
+  console.log(`TCP integration server running on port ${TCP_INTEGRATION_PORT}`);
 });

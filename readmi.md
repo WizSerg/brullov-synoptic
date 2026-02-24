@@ -64,6 +64,39 @@ Then open http://localhost:3001 (the server serves the built UI).
 - `GET /api/auth/me`
   - Returns current auth status + username.
 
+
+## TCP integration protocol (ASCII, v1)
+
+A lightweight TCP server is available for external integrations.
+
+- Fixed TCP port: `31415`.
+- Transport: plain TCP, ASCII line protocol.
+- Line ending: `\n` or `\r\n`.
+- Multiple clients can stay connected simultaneously.
+- No authentication (intended for an isolated trusted network).
+
+### Welcome line
+
+On connect, the server sends:
+
+- `RMS SYNOPTIC/<version>`
+
+`<version>` is taken from app metadata (same version shown in About).
+
+### Commands (client -> server)
+
+- `SET MIC <id> TOGGLE`
+
+Toggles microphone runtime state and broadcasts event to all connected TCP clients.
+
+### Events (server -> all connected clients)
+
+- `EVENT MIC <id> ON`
+- `EVENT MIC <id> OFF`
+- `EVENT MIC <id> NOT_FOUND`
+
+Events are broadcast for any microphone toggle initiated from web UI API or TCP command path.
+
 ## Acceptance criteria mapping
 
 | Requirement | Implementation |
