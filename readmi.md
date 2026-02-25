@@ -86,9 +86,11 @@ On connect, the server sends:
 
 ### Commands (client -> server)
 
+- `SET MIC <micId> ON`
+- `SET MIC <micId> OFF`
 - `SET MIC <micId> TOGGLE`
 
-Toggles microphone runtime state and broadcasts event to all connected TCP clients.
+Sets (or toggles) microphone runtime state and broadcasts event to all connected TCP clients.
 
 ### Events (server -> all connected clients)
 
@@ -97,6 +99,19 @@ Toggles microphone runtime state and broadcasts event to all connected TCP clien
 - `EVENT MIC <micId> NOT_FOUND`
 
 Events are broadcast for any microphone toggle initiated from web UI API or TCP command path.
+
+### Conference integration API (DCS100 / DCS150)
+
+- `GET /api/conference/settings` — current persisted driver settings.
+- `POST /api/conference/settings` — validate and hot-switch active driver (`enabled`, `type`, `deviceIp`, optional `bindIp`, `options`).
+- `GET /api/conference/status` — active driver, health state, capabilities.
+- `POST /api/microphones/:id/on` — set microphone state ON.
+- `POST /api/microphones/:id/off` — set microphone state OFF.
+- `POST /api/microphones/:id/toggle` — compatibility endpoint.
+
+Notes:
+- `micId` is normalized as a positive integer in project storage and API.
+- TCP integration also accepts `SET MIC <micId> ON|OFF|TOGGLE`.
 
 ## Acceptance criteria mapping
 
@@ -124,4 +139,5 @@ Events are broadcast for any microphone toggle initiated from web UI API or TCP 
 ## Notes
 
 - Stored project data lives in `server/data/` (created on first run).
-- This MVP does **not** control hardware; it only provides the UI and storage.
+- MVP now supports optional integration with one active conference driver (`dcs100` TCP or `dcs150` UDP) configured via API.
+- Hardware integration remains capability-driven and can be disabled (`conference.enabled=false`).

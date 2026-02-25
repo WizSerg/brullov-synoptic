@@ -9,6 +9,9 @@ import crypto from "node:crypto";
 import os from "node:os";
 import net from "node:net";
 import { fileURLToPath } from "url";
+import { ConferenceManager } from "./conference/manager.js";
+import { DEFAULT_CONFERENCE_SETTINGS, MIC_STATE } from "./conference/constants.js";
+import { hasDriverType, listDriverTypes } from "./conference/registry.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,6 +27,7 @@ const serverPackagePath = path.join(__dirname, "package.json");
 const projectPath = path.join(dataDir, "project.json");
 const authPath = path.join(dataDir, "auth.json");
 const appLogPath = path.join(logsDir, "app.log");
+const conferenceSettingsPath = path.join(dataDir, "conference-settings.json");
 const LOG_ROTATE_MAX_SIZE_BYTES = 5 * 1024 * 1024;
 const LOG_ROTATE_MAX_FILES = 5;
 const BACKGROUND_BASENAME = "background";
@@ -50,15 +54,11 @@ const defaultProject = {
   }
 };
 
-const MIC_STATE = {
-  ON: "ON",
-  OFF: "OFF"
-};
-
 const microphoneRuntimeStates = new Map();
 const sessionStore = new Map();
 let appMetadataPromise = null;
 const tcpClients = new Set();
+const micPendingStates = new Map();
 
 const sendTcpLine = (socket, message) => {
   if (!socket || socket.destroyed) {
@@ -197,6 +197,9 @@ const ensureData = async () => {
       { spaces: 2 }
     );
   }
+  if (!(await fs.pathExists(conferenceSettingsPath))) {
+    await fs.writeJson(conferenceSettingsPath, DEFAULT_CONFERENCE_SETTINGS, { spaces: 2 });
+  }
 };
 
 const readAuthConfig = async () => {
@@ -206,6 +209,52 @@ const readAuthConfig = async () => {
 
 const saveAuthConfig = async (authConfig) => {
   await fs.writeJson(authPath, authConfig, { spaces: 2 });
+};
+
+
+const normalizeConferenceSettings = (settings = {}) => ({
+  enabled: Boolean(settings.enabled),
+  type: typeof settings.type === "string" ? settings.type : DEFAULT_CONFERENCE_SETTINGS.type,
+  deviceIp: typeof settings.deviceIp === "string" ? settings.deviceIp.trim() : "",
+  bindIp: typeof settings.bindIp === "string" ? settings.bindIp.trim() : "",
+  options: {
+    ...DEFAULT_CONFERENCE_SETTINGS.options,
+    ...(settings.options || {})
+  }
+});
+
+const readConferenceSettings = async () => {
+  await ensureData();
+  const settings = await fs.readJson(conferenceSettingsPath);
+  return normalizeConferenceSettings(settings);
+};
+
+const saveConferenceSettings = async (settings) => {
+  await fs.writeJson(conferenceSettingsPath, normalizeConferenceSettings(settings), { spaces: 2 });
+};
+
+const isValidIpv4 = (value) => {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const parts = value.split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+  return parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+};
+
+const validateConferenceSettings = (settings) => {
+  if (!hasDriverType(settings.type)) {
+    return `Unsupported conference type: ${settings.type}. Available: ${listDriverTypes().join(", ")}`;
+  }
+  if (!isValidIpv4(settings.deviceIp)) {
+    return "Invalid conference deviceIp";
+  }
+  if (settings.type === "dcs150" && !isValidIpv4(settings.bindIp)) {
+    return "Invalid conference bindIp for dcs150";
+  }
+  return null;
 };
 
 const rotateLogsIfNeeded = async (incomingEntryBytes) => {
@@ -365,13 +414,15 @@ const saveProject = async (project) => {
   await fs.writeJson(projectPath, project, { spaces: 2 });
 };
 
-const normalizeRuntimeMicState = (state) => (state === MIC_STATE.ON ? MIC_STATE.ON : MIC_STATE.OFF);
+const normalizeRuntimeMicState = (state) =>
+  state === MIC_STATE.ON ? MIC_STATE.ON : state === MIC_STATE.UNKNOWN ? MIC_STATE.UNKNOWN : MIC_STATE.OFF;
 
 const withRuntimeMicStates = (project) => {
   const microphones = Array.isArray(project.microphones)
     ? project.microphones.map((mic) => ({
         ...mic,
-        state: normalizeRuntimeMicState(microphoneRuntimeStates.get(mic.micId))
+        state: normalizeRuntimeMicState(microphoneRuntimeStates.get(mic.micId)),
+        pending: micPendingStates.get(mic.micId) || false
       }))
     : [];
   return {
@@ -383,7 +434,7 @@ const withRuntimeMicStates = (project) => {
 const reconcileRuntimeMicStates = (microphones) => {
   const incomingIds = new Set();
   for (const mic of microphones || []) {
-    if (!mic?.micId) {
+    if (!Number.isInteger(mic?.micId)) {
       continue;
     }
     incomingIds.add(mic.micId);
@@ -395,62 +446,94 @@ const reconcileRuntimeMicStates = (microphones) => {
   for (const micId of microphoneRuntimeStates.keys()) {
     if (!incomingIds.has(micId)) {
       microphoneRuntimeStates.delete(micId);
+      micPendingStates.delete(micId);
     }
   }
 };
 
 const emitMicEvent = (micId, state) => {
-  if (!micId || !state) {
+  if (!Number.isInteger(micId) || !state) {
     return;
   }
   broadcastTcpLine(`EVENT MIC ${micId} ${state}`);
 };
 
-const toggleMicrophoneById = async (micId, source) => {
-  if (!micId) {
+const parseMicId = (micId) => {
+  const parsed = Number(micId);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+};
+
+const setMicrophoneStateById = async (micId, requestedState, source) => {
+  const normalizedMicId = parseMicId(micId);
+  if (!normalizedMicId) {
     return { status: "BAD_REQUEST" };
   }
 
   const project = await loadProject();
-  const micExists = Array.isArray(project.microphones) && project.microphones.some((mic) => mic.micId === micId);
+  const micExists = Array.isArray(project.microphones) && project.microphones.some((mic) => mic.micId === normalizedMicId);
   if (!micExists) {
-    emitMicEvent(micId, "NOT_FOUND");
-    return { status: "NOT_FOUND", id: micId };
+    emitMicEvent(normalizedMicId, "NOT_FOUND");
+    return { status: "NOT_FOUND", id: normalizedMicId };
   }
 
-  const currentState = normalizeRuntimeMicState(microphoneRuntimeStates.get(micId));
+  const state = requestedState === MIC_STATE.ON ? MIC_STATE.ON : MIC_STATE.OFF;
+  micPendingStates.set(normalizedMicId, true);
+
+  try {
+    await conferenceManager.setMicState(normalizedMicId, state);
+  } catch (error) {
+    micPendingStates.set(normalizedMicId, false);
+    microphoneRuntimeStates.set(normalizedMicId, MIC_STATE.UNKNOWN);
+    emitMicEvent(normalizedMicId, MIC_STATE.UNKNOWN);
+    await addLog("mic_state_failed", { id: normalizedMicId, state, source, error: error.message });
+    return { status: "ERROR", id: normalizedMicId, error: error.message };
+  }
+
+  microphoneRuntimeStates.set(normalizedMicId, state);
+  micPendingStates.set(normalizedMicId, false);
+  await addLog("mic_state", { id: normalizedMicId, state, source });
+  emitMicEvent(normalizedMicId, state);
+  return { status: "OK", id: normalizedMicId, state };
+};
+
+const toggleMicrophoneById = async (micId, source) => {
+  const normalizedMicId = parseMicId(micId);
+  if (!normalizedMicId) {
+    return { status: "BAD_REQUEST" };
+  }
+  const currentState = normalizeRuntimeMicState(microphoneRuntimeStates.get(normalizedMicId));
   const nextState = currentState === MIC_STATE.ON ? MIC_STATE.OFF : MIC_STATE.ON;
-  microphoneRuntimeStates.set(micId, nextState);
-
-  await addLog("mic_toggle", { id: micId, state: nextState, source });
-  emitMicEvent(micId, nextState);
-
-  return { status: "OK", id: micId, state: nextState };
+  return setMicrophoneStateById(normalizedMicId, nextState, source);
 };
 
 const sanitizeMicrophonesForStorage = (microphones) =>
-  (microphones || []).map((mic) => {
-    const normalizedMicId = typeof mic.micId === "string" && mic.micId.trim() ? mic.micId.trim() : null;
-    if (!normalizedMicId) {
-      return null;
-    }
+  (microphones || [])
+    .map((mic) => {
+      const normalizedMicId = parseMicId(mic.micId);
+      if (!normalizedMicId) {
+        return null;
+      }
 
-    return {
-      id: typeof mic.id === "string" && mic.id ? mic.id : crypto.randomUUID(),
-      micId: normalizedMicId,
-      micText:
-        typeof mic.micText === "string"
-          ? mic.micText
-          : typeof mic.seatText === "string"
-            ? mic.seatText
-            : normalizedMicId,
-      label: typeof mic.label === "string" ? mic.label : "",
-      x: Number.isFinite(Number(mic.x)) ? Number(mic.x) : 0.5,
-      y: Number.isFinite(Number(mic.y)) ? Number(mic.y) : 0.5,
-      sizeScale: Number.isFinite(Number(mic.sizeScale)) ? Number(mic.sizeScale) : 1,
-      buttonStyleCss: typeof mic.buttonStyleCss === "string" ? mic.buttonStyleCss : ""
-    };
-  }).filter(Boolean);
+      return {
+        id: typeof mic.id === "string" && mic.id ? mic.id : crypto.randomUUID(),
+        micId: normalizedMicId,
+        micText:
+          typeof mic.micText === "string"
+            ? mic.micText
+            : typeof mic.seatText === "string"
+              ? mic.seatText
+              : String(normalizedMicId),
+        label: typeof mic.label === "string" ? mic.label : "",
+        x: Number.isFinite(Number(mic.x)) ? Number(mic.x) : 0.5,
+        y: Number.isFinite(Number(mic.y)) ? Number(mic.y) : 0.5,
+        sizeScale: Number.isFinite(Number(mic.sizeScale)) ? Number(mic.sizeScale) : 1,
+        buttonStyleCss: typeof mic.buttonStyleCss === "string" ? mic.buttonStyleCss : ""
+      };
+    })
+    .filter(Boolean);
 
 const addLog = async (type, details = null) => {
   const entry = {
@@ -462,6 +545,25 @@ const addLog = async (type, details = null) => {
   await appendLogEntry(entry);
   return entry;
 };
+
+const conferenceManager = new ConferenceManager({
+  onMicStateChange: async ({ micId, state }) => {
+    if (!Number.isInteger(micId)) {
+      return;
+    }
+    microphoneRuntimeStates.set(micId, normalizeRuntimeMicState(state));
+    micPendingStates.set(micId, false);
+    emitMicEvent(micId, normalizeRuntimeMicState(state));
+    await addLog("mic_feedback", { id: micId, state });
+  },
+  onHealth: async (health) => {
+    await addLog("conference_health", health);
+  }
+});
+
+conferenceManager.on("error", async (event) => {
+  await addLog("conference_error", event);
+});
 
 app.use(express.json({ limit: "10mb" }));
 app.use(cors());
@@ -550,6 +652,42 @@ app.post("/api/change-password", requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+app.get("/api/conference/settings", requireAuth, async (_req, res) => {
+  const settings = await readConferenceSettings();
+  res.json(settings);
+});
+
+app.post("/api/conference/settings", requireAuth, async (req, res) => {
+  const nextSettings = normalizeConferenceSettings(req.body || {});
+  const validationError = validateConferenceSettings(nextSettings);
+  if (validationError) {
+    res.status(400).json({ error: validationError });
+    return;
+  }
+
+  const previousSettings = await readConferenceSettings();
+
+  try {
+    await conferenceManager.switchConfig(nextSettings);
+    await saveConferenceSettings(nextSettings);
+  } catch (error) {
+    try {
+      await conferenceManager.switchConfig(previousSettings);
+    } catch {
+      // ignore rollback errors
+    }
+    res.status(400).json({ error: error.message });
+    return;
+  }
+
+  await addLog("conference_settings", nextSettings);
+  res.json(nextSettings);
+});
+
+app.get("/api/conference/status", requireAuth, async (_req, res) => {
+  res.json(conferenceManager.getStatus());
+});
+
 app.get("/api/background/file", requireAuth, async (_req, res) => {
   const project = await loadProject();
   if (!project.background || !project.backgroundExt) {
@@ -608,12 +746,9 @@ app.post("/api/project", requireAuth, async (req, res) => {
   res.json(withRuntimeMicStates(project));
 });
 
-app.post("/api/microphones/:id/toggle", requireAuth, async (req, res) => {
-  const micId = req.params.id;
-  const result = await toggleMicrophoneById(micId, "run_click");
-
+const sendMicActionResult = (res, result) => {
   if (result.status === "BAD_REQUEST") {
-    res.status(400).json({ error: "Missing microphone id" });
+    res.status(400).json({ error: "Invalid microphone id" });
     return;
   }
 
@@ -622,7 +757,27 @@ app.post("/api/microphones/:id/toggle", requireAuth, async (req, res) => {
     return;
   }
 
+  if (result.status === "ERROR") {
+    res.status(502).json({ error: result.error || "Conference driver command failed" });
+    return;
+  }
+
   res.json({ id: result.id, state: result.state });
+};
+
+app.post("/api/microphones/:id/on", requireAuth, async (req, res) => {
+  const result = await setMicrophoneStateById(req.params.id, MIC_STATE.ON, "run_click");
+  sendMicActionResult(res, result);
+});
+
+app.post("/api/microphones/:id/off", requireAuth, async (req, res) => {
+  const result = await setMicrophoneStateById(req.params.id, MIC_STATE.OFF, "run_click");
+  sendMicActionResult(res, result);
+});
+
+app.post("/api/microphones/:id/toggle", requireAuth, async (req, res) => {
+  const result = await toggleMicrophoneById(req.params.id, "run_click");
+  sendMicActionResult(res, result);
 });
 
 app.get("/api/logs", requireAuth, async (req, res) => {
@@ -806,14 +961,21 @@ const tcpServer = net.createServer((socket) => {
         continue;
       }
 
-      const match = line.match(/^SET MIC (\S+) TOGGLE$/);
+      const match = line.match(/^SET MIC (\S+) (ON|OFF|TOGGLE)$/);
       if (!match) {
         continue;
       }
 
       const micId = match[1];
+      const action = match[2];
       try {
-        await toggleMicrophoneById(micId, "tcp_client");
+        if (action === "ON") {
+          await setMicrophoneStateById(micId, MIC_STATE.ON, "tcp_client");
+        } else if (action === "OFF") {
+          await setMicrophoneStateById(micId, MIC_STATE.OFF, "tcp_client");
+        } else {
+          await toggleMicrophoneById(micId, "tcp_client");
+        }
       } catch (error) {
         console.error("TCP command handling error", error);
       }
@@ -862,6 +1024,31 @@ if (process.env.NODE_ENV === "production") {
     res.sendFile(path.join(clientDist, "index.html"));
   });
 }
+
+const bootstrapConference = async () => {
+  await ensureData();
+  const settings = await readConferenceSettings();
+  if (!settings.enabled) {
+    await conferenceManager.switchConfig(settings);
+    return;
+  }
+
+  const validationError = validateConferenceSettings(settings);
+  if (validationError) {
+    await addLog("conference_settings_invalid", { error: validationError, settings });
+    await conferenceManager.switchConfig({ ...settings, enabled: false });
+    return;
+  }
+
+  try {
+    await conferenceManager.switchConfig(settings);
+  } catch (error) {
+    await addLog("conference_start_failed", { error: error.message, settings });
+    await conferenceManager.switchConfig({ ...settings, enabled: false });
+  }
+};
+
+await bootstrapConference();
 
 app.listen(PORT, () => {
   console.log(`Synoptic server running on port ${PORT}`);

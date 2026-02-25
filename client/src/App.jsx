@@ -27,7 +27,16 @@ const FONT_OPTIONS = [
 
 const MIC_STATE = {
   ON: "ON",
-  OFF: "OFF"
+  OFF: "OFF",
+  UNKNOWN: "UNKNOWN"
+};
+
+const parseMicId = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
 };
 
 const formatTimestamp = (value) => new Date(value).toLocaleString();
@@ -60,11 +69,7 @@ const normalizeProject = (data) => {
   const microphones = Array.isArray(data.microphones) ? data.microphones : [];
   const normalizedMics = microphones
     .map((mic) => {
-      const normalizedMicId = typeof mic.micId === "string" && mic.micId.trim()
-        ? mic.micId.trim()
-        : typeof mic.id === "string" && mic.id.trim()
-          ? mic.id.trim()
-          : null;
+      const normalizedMicId = parseMicId(mic.micId ?? mic.id);
       if (!normalizedMicId) {
         return null;
       }
@@ -77,9 +82,9 @@ const normalizeProject = (data) => {
             ? mic.micText
             : typeof mic.seatText === "string"
               ? mic.seatText
-              : normalizedMicId,
+              : String(normalizedMicId),
         label: typeof mic.label === "string" ? mic.label : "",
-        state: mic.state === MIC_STATE.ON ? MIC_STATE.ON : MIC_STATE.OFF,
+        state: mic.state === MIC_STATE.ON ? MIC_STATE.ON : mic.state === MIC_STATE.UNKNOWN ? MIC_STATE.UNKNOWN : MIC_STATE.OFF,
         sizeScale: Number.isFinite(Number(mic.sizeScale)) ? Number(mic.sizeScale) : 1,
         buttonStyleCss: typeof mic.buttonStyleCss === "string" ? mic.buttonStyleCss : ""
       };
@@ -282,12 +287,13 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
   };
 
   const handleAddMic = () => {
+    const nextMicId = microphones.reduce((maxId, mic) => Math.max(maxId, Number(mic.micId) || 0), 0) + 1;
     const newMic = {
       id: crypto.randomUUID(),
       x: 0.5,
       y: 0.5,
-      micId: `mic-${microphones.length + 1}`,
-      micText: `mic-${microphones.length + 1}`,
+      micId: nextMicId,
+      micText: String(nextMicId),
       label: "",
       sizeScale: 1,
       buttonStyleCss: "",
@@ -447,12 +453,13 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
         }
 
         if (field === "micId") {
-          const nextMicId = value.trim();
-          const shouldSyncText = (item.micText ?? "") === (item.micId ?? "");
+          const parsedMicId = parseMicId(value);
+          const nextMicId = parsedMicId ?? item.micId;
+          const shouldSyncText = String(item.micText ?? "") === String(item.micId ?? "");
           return {
             ...item,
             micId: nextMicId,
-            micText: shouldSyncText ? nextMicId : item.micText
+            micText: shouldSyncText ? String(nextMicId) : item.micText
           };
         }
 
