@@ -139,5 +139,5 @@ Notes:
 ## Notes
 
 - Stored project data lives in `server/data/` (created on first run).
-- MVP now supports optional integration with one active conference driver (`dcs100` TCP or `dcs150` UDP) configured via API.
+- MVP now supports optional integration with one active conference driver (`virtual` simulation, `dcs100` TCP, or `dcs150` UDP) configured via API or Settings UI.
 - Hardware integration remains capability-driven and can be disabled (`conference.enabled=false`).

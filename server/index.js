@@ -248,7 +248,12 @@ const validateConferenceSettings = (settings) => {
   if (!hasDriverType(settings.type)) {
     return `Unsupported conference type: ${settings.type}. Available: ${listDriverTypes().join(", ")}`;
   }
-  if (!isValidIpv4(settings.deviceIp)) {
+
+  if (!settings.enabled) {
+    return null;
+  }
+
+  if (settings.type !== "virtual" && !isValidIpv4(settings.deviceIp)) {
     return "Invalid conference deviceIp";
   }
   if (settings.type === "dcs150" && !isValidIpv4(settings.bindIp)) {
