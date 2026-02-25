@@ -27,7 +27,35 @@ const FONT_OPTIONS = [
 
 const MIC_STATE = {
   ON: "ON",
-  OFF: "OFF"
+  OFF: "OFF",
+  UNKNOWN: "UNKNOWN"
+};
+
+const parseMicId = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+  return parsed;
+};
+
+const CONFERENCE_TYPE_OPTIONS = [
+  { value: "virtual", label: "Virtual (simulation)" },
+  { value: "dcs100", label: "DCS100 (TCP)" },
+  { value: "dcs150", label: "DCS150 (UDP)" }
+];
+
+const DEFAULT_CONFERENCE_SETTINGS = {
+  enabled: false,
+  type: "virtual",
+  deviceIp: "",
+  bindIp: "",
+  options: {
+    debug: false,
+    timeoutMs: 1500,
+    healthTimeoutMs: 15000,
+    virtualLatencyMs: 80
+  }
 };
 
 const formatTimestamp = (value) => new Date(value).toLocaleString();
@@ -60,11 +88,7 @@ const normalizeProject = (data) => {
   const microphones = Array.isArray(data.microphones) ? data.microphones : [];
   const normalizedMics = microphones
     .map((mic) => {
-      const normalizedMicId = typeof mic.micId === "string" && mic.micId.trim()
-        ? mic.micId.trim()
-        : typeof mic.id === "string" && mic.id.trim()
-          ? mic.id.trim()
-          : null;
+      const normalizedMicId = parseMicId(mic.micId ?? mic.id);
       if (!normalizedMicId) {
         return null;
       }
@@ -77,9 +101,9 @@ const normalizeProject = (data) => {
             ? mic.micText
             : typeof mic.seatText === "string"
               ? mic.seatText
-              : normalizedMicId,
+              : String(normalizedMicId),
         label: typeof mic.label === "string" ? mic.label : "",
-        state: mic.state === MIC_STATE.ON ? MIC_STATE.ON : MIC_STATE.OFF,
+        state: mic.state === MIC_STATE.ON ? MIC_STATE.ON : mic.state === MIC_STATE.UNKNOWN ? MIC_STATE.UNKNOWN : MIC_STATE.OFF,
         sizeScale: Number.isFinite(Number(mic.sizeScale)) ? Number(mic.sizeScale) : 1,
         buttonStyleCss: typeof mic.buttonStyleCss === "string" ? mic.buttonStyleCss : ""
       };
@@ -126,6 +150,10 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordStatus, setPasswordStatus] = useState("");
+  const [conferenceSettings, setConferenceSettings] = useState(DEFAULT_CONFERENCE_SETTINGS);
+  const [conferenceStatus, setConferenceStatus] = useState(null);
+  const [conferenceStatusMessage, setConferenceStatusMessage] = useState("");
+  const [conferenceSaving, setConferenceSaving] = useState(false);
 
   const microphones = project.microphones ?? [];
   const t = (key, params) => translate(language, key, params);
@@ -185,6 +213,54 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
     setAboutInfo(data || null);
   };
 
+
+  const fetchConferenceSettings = async () => {
+    const response = await fetch("/api/conference/settings");
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    setConferenceSettings({
+      ...DEFAULT_CONFERENCE_SETTINGS,
+      ...(data || {}),
+      options: {
+        ...DEFAULT_CONFERENCE_SETTINGS.options,
+        ...(data?.options || {})
+      }
+    });
+  };
+
+  const fetchConferenceStatus = async () => {
+    const response = await fetch("/api/conference/status");
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    setConferenceStatus(data || null);
+  };
+
+  const saveConferenceSettings = async () => {
+    setConferenceSaving(true);
+    setConferenceStatusMessage("");
+    try {
+      const response = await fetch("/api/conference/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(conferenceSettings)
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        setConferenceStatusMessage(errorData?.error || "Failed to save conference settings");
+        return;
+      }
+      await fetchConferenceSettings();
+      await fetchConferenceStatus();
+      setConferenceStatusMessage("Conference settings saved.");
+    } finally {
+      setConferenceSaving(false);
+    }
+  };
+
   useEffect(() => {
     fetchProject();
     fetchLogs();
@@ -227,6 +303,9 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
     if (!showSettings) {
       return;
     }
+
+    fetchConferenceSettings();
+    fetchConferenceStatus();
 
     const handleEscape = (event) => {
       if (event.key === "Escape") {
@@ -282,12 +361,13 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
   };
 
   const handleAddMic = () => {
+    const nextMicId = microphones.reduce((maxId, mic) => Math.max(maxId, Number(mic.micId) || 0), 0) + 1;
     const newMic = {
       id: crypto.randomUUID(),
       x: 0.5,
       y: 0.5,
-      micId: `mic-${microphones.length + 1}`,
-      micText: `mic-${microphones.length + 1}`,
+      micId: nextMicId,
+      micText: String(nextMicId),
       label: "",
       sizeScale: 1,
       buttonStyleCss: "",
@@ -447,12 +527,13 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
         }
 
         if (field === "micId") {
-          const nextMicId = value.trim();
-          const shouldSyncText = (item.micText ?? "") === (item.micId ?? "");
+          const parsedMicId = parseMicId(value);
+          const nextMicId = parsedMicId ?? item.micId;
+          const shouldSyncText = String(item.micText ?? "") === String(item.micId ?? "");
           return {
             ...item,
             micId: nextMicId,
-            micText: shouldSyncText ? nextMicId : item.micText
+            micText: shouldSyncText ? String(nextMicId) : item.micText
           };
         }
 
@@ -495,6 +576,20 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
       }
     }));
     setDirty(true);
+  };
+
+  const handleConferenceSettingChange = (field, value) => {
+    setConferenceSettings((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleConferenceOptionChange = (field, value) => {
+    setConferenceSettings((prev) => ({
+      ...prev,
+      options: {
+        ...prev.options,
+        [field]: value
+      }
+    }));
   };
 
   const handleChangePassword = async (event) => {
@@ -893,6 +988,118 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
                   <option value="bold">Bold</option>
                 </select>
               </label>
+            </div>
+            <div className="conference-section">
+              <h3>Conference system</h3>
+              <div className="settings-grid">
+                <label className="property-field">
+                  <span className="property-label">Enable integration</span>
+                  <select
+                    className="input"
+                    value={conferenceSettings.enabled ? "yes" : "no"}
+                    onChange={(event) => handleConferenceSettingChange("enabled", event.target.value === "yes")}
+                  >
+                    <option value="no">No</option>
+                    <option value="yes">Yes</option>
+                  </select>
+                </label>
+                <label className="property-field">
+                  <span className="property-label">System type</span>
+                  <select
+                    className="input"
+                    value={conferenceSettings.type}
+                    onChange={(event) => handleConferenceSettingChange("type", event.target.value)}
+                  >
+                    {CONFERENCE_TYPE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="property-field">
+                  <span className="property-label">Device IP</span>
+                  <input
+                    className="input"
+                    value={conferenceSettings.deviceIp || ""}
+                    disabled={conferenceSettings.type === "virtual"}
+                    onChange={(event) => handleConferenceSettingChange("deviceIp", event.target.value)}
+                    placeholder={conferenceSettings.type === "virtual" ? "Not required" : "192.168.1.50"}
+                  />
+                </label>
+                {conferenceSettings.type === "dcs150" && (
+                  <label className="property-field">
+                    <span className="property-label">Bind IP (local)</span>
+                    <input
+                      className="input"
+                      value={conferenceSettings.bindIp || ""}
+                      onChange={(event) => handleConferenceSettingChange("bindIp", event.target.value)}
+                      placeholder="192.168.1.10"
+                    />
+                  </label>
+                )}
+                <label className="property-field">
+                  <span className="property-label">Timeout (ms)</span>
+                  <input
+                    className="input"
+                    type="number"
+                    min={200}
+                    value={conferenceSettings.options?.timeoutMs ?? 1500}
+                    onChange={(event) => handleConferenceOptionChange("timeoutMs", Number(event.target.value) || 1500)}
+                  />
+                </label>
+                {conferenceSettings.type === "dcs150" && (
+                  <label className="property-field">
+                    <span className="property-label">Health timeout (ms)</span>
+                    <input
+                      className="input"
+                      type="number"
+                      min={1000}
+                      value={conferenceSettings.options?.healthTimeoutMs ?? 15000}
+                      onChange={(event) =>
+                        handleConferenceOptionChange("healthTimeoutMs", Number(event.target.value) || 15000)
+                      }
+                    />
+                  </label>
+                )}
+                {conferenceSettings.type === "virtual" && (
+                  <label className="property-field">
+                    <span className="property-label">Virtual latency (ms)</span>
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      value={conferenceSettings.options?.virtualLatencyMs ?? 80}
+                      onChange={(event) =>
+                        handleConferenceOptionChange("virtualLatencyMs", Number(event.target.value) || 0)
+                      }
+                    />
+                  </label>
+                )}
+                <label className="property-field">
+                  <span className="property-label">Debug driver log</span>
+                  <select
+                    className="input"
+                    value={conferenceSettings.options?.debug ? "yes" : "no"}
+                    onChange={(event) => handleConferenceOptionChange("debug", event.target.value === "yes")}
+                  >
+                    <option value="no">No</option>
+                    <option value="yes">Yes</option>
+                  </select>
+                </label>
+              </div>
+              {conferenceStatus && (
+                <p className="log-empty">
+                  Active: {conferenceStatus.activeDriver || "—"}; health: {conferenceStatus.health?.status || "unknown"}
+                  {conferenceStatus.health?.reason ? ` (${conferenceStatus.health.reason})` : ""}
+                </p>
+              )}
+              {conferenceStatusMessage && <p className="log-empty">{conferenceStatusMessage}</p>}
+              <div className="log-modal__actions">
+                <button type="button" className="button" disabled={conferenceSaving} onClick={saveConferenceSettings}>
+                  {conferenceSaving ? "Saving..." : "Save conference settings"}
+                </button>
+              </div>
             </div>
             <form className="password-form" onSubmit={handleChangePassword}>
               <h3>Change password</h3>
