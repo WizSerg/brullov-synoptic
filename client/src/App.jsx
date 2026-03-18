@@ -10,6 +10,12 @@ const DEFAULT_PROJECT = {
   microphones: [],
   showLabels: true,
   micSize: 32,
+  micButtonStyleCss: "",
+  conference: {
+    type: "virtual",
+    deviceIp: "",
+    bindIp: ""
+  },
   fontSettings: {
     micTextFamily: "system-ui",
     micTextWeight: "bold",
@@ -29,6 +35,18 @@ const MIC_STATE = {
   ON: "ON",
   OFF: "OFF"
 };
+
+const CONNECTION_STATUS = {
+  ONLINE: "online",
+  OFFLINE: "offline",
+  DEGRADED: "degraded"
+};
+
+const CONFERENCE_TYPE_OPTIONS = [
+  { value: "virtual", label: "Virtual" },
+  { value: "dcs100", label: "DCS100" },
+  { value: "dcs150", label: "DCS150" }
+];
 
 const formatTimestamp = (value) => new Date(value).toLocaleString();
 
@@ -55,6 +73,14 @@ const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const MIN_MIC_SIZE = 20;
 const MAX_MIC_SIZE = 64;
 const MIC_SIZE_STEP = 4;
+const AUTOSAVE_DELAY_MS = 900;
+
+const formatRelativeTime = (value) => {
+  if (!value) {
+    return "—";
+  }
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
 
 const normalizeProject = (data) => {
   const microphones = Array.isArray(data.microphones) ? data.microphones : [];
@@ -95,6 +121,16 @@ const normalizeProject = (data) => {
     showLabels: typeof data.showLabels === "boolean" ? data.showLabels : DEFAULT_PROJECT.showLabels,
     micSize:
       typeof data.micSize === "number" ? clamp(data.micSize, MIN_MIC_SIZE, MAX_MIC_SIZE) : DEFAULT_PROJECT.micSize,
+    conference: {
+      ...DEFAULT_PROJECT.conference,
+      ...(data.conference || {}),
+      type:
+        typeof data.conference?.type === "string" && data.conference.type.trim()
+          ? data.conference.type.trim().toLowerCase()
+          : DEFAULT_PROJECT.conference.type,
+      deviceIp: typeof data.conference?.deviceIp === "string" ? data.conference.deviceIp : "",
+      bindIp: typeof data.conference?.bindIp === "string" ? data.conference.bindIp : ""
+    },
     fontSettings: {
       ...DEFAULT_PROJECT.fontSettings,
       ...(data.fontSettings || {})
@@ -108,9 +144,10 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
   const [project, setProject] = useState(DEFAULT_PROJECT);
   const [dirty, setDirty] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
+  const [saveState, setSaveState] = useState("saved");
+  const [lastSavedAt, setLastSavedAt] = useState(null);
   const [stageSize, setStageSize] = useState({ width: 900, height: 520 });
   const containerRef = useRef(null);
-  const previousModeRef = useRef("edit");
   const backgroundUrl =
     project.background && project.backgroundExt
       ? `/api/background/file?v=${encodeURIComponent(project.backgroundUpdatedAt || "current")}`
@@ -122,6 +159,13 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
   const [showSettings, setShowSettings] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [aboutInfo, setAboutInfo] = useState(null);
+  const [conferenceStatus, setConferenceStatus] = useState({
+    type: "virtual",
+    deviceIp: "",
+    bindIp: "",
+    connectionStatus: CONNECTION_STATUS.ONLINE,
+    detail: "Virtual controller"
+  });
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -145,6 +189,8 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
     const data = await response.json();
     setProject(normalizeProject(data));
     setDirty(false);
+    setSaveState("saved");
+    setLastSavedAt(new Date().toISOString());
   };
 
   const showToast = (message) => {
@@ -185,9 +231,38 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
     setAboutInfo(data || null);
   };
 
+  const fetchConferenceStatus = async () => {
+    const response = await fetch("/api/conference/status");
+    if (!response.ok) {
+      return;
+    }
+    const data = await response.json();
+    setConferenceStatus({
+      type: typeof data?.type === "string" ? data.type : "virtual",
+      deviceIp: typeof data?.deviceIp === "string" ? data.deviceIp : "",
+      bindIp: typeof data?.bindIp === "string" ? data.bindIp : "",
+      connectionStatus:
+        data?.connectionStatus === CONNECTION_STATUS.DEGRADED
+          ? CONNECTION_STATUS.DEGRADED
+          : data?.connectionStatus === CONNECTION_STATUS.OFFLINE
+            ? CONNECTION_STATUS.OFFLINE
+            : CONNECTION_STATUS.ONLINE,
+      detail: typeof data?.detail === "string" ? data.detail : ""
+    });
+  };
+
   useEffect(() => {
     fetchProject();
     fetchLogs();
+    fetchConferenceStatus();
+  }, []);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      fetchConferenceStatus();
+    }, 5000);
+
+    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
@@ -304,6 +379,7 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
 
   const handleSave = async (projectToSave = project) => {
     try {
+      setSaveState("saving");
       const response = await fetch("/api/project", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -313,19 +389,25 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
           showLabels: projectToSave.showLabels,
           micSize: projectToSave.micSize,
           fontSettings: projectToSave.fontSettings,
-          micButtonStyleCss: projectToSave.micButtonStyleCss
+          micButtonStyleCss: projectToSave.micButtonStyleCss,
+          conference: projectToSave.conference
         })
       });
       if (!response.ok) {
         console.error("Save request failed with status", response.status);
+        setSaveState("error");
         return false;
       }
       const data = await response.json();
       setProject(normalizeProject(data));
       setDirty(false);
+      setSaveState("saved");
+      setLastSavedAt(new Date().toISOString());
+      fetchConferenceStatus();
       return true;
     } catch (error) {
       console.error("Save request failed", error);
+      setSaveState("error");
       return false;
     }
   };
@@ -340,7 +422,8 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
         showLabels: project.showLabels,
         micSize: project.micSize,
         fontSettings: project.fontSettings,
-        micButtonStyleCss: project.micButtonStyleCss
+        micButtonStyleCss: project.micButtonStyleCss,
+        conference: project.conference
       })
     });
     if (!response.ok) {
@@ -528,23 +611,48 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
     setPasswordStatus("Password updated.");
   };
 
+  const handleConferenceChange = (field, value) => {
+    setProject((prev) => ({
+      ...prev,
+      conference: {
+        ...prev.conference,
+        [field]: value
+      }
+    }));
+    setDirty(true);
+  };
+
+  const handleModeToggle = () => {
+    if (mode === "run") {
+      const confirmed = window.confirm("Switch to Edit mode? Use it only for layout changes.");
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setMode((prev) => (prev === "edit" ? "run" : "edit"));
+  };
+
   useEffect(() => {
-    const previousMode = previousModeRef.current;
-    previousModeRef.current = mode;
-    if (previousMode !== "edit" || mode !== "run" || !dirty) {
+    if (!dirty) {
+      if (saveState !== "error") {
+        setSaveState("saved");
+      }
       return;
     }
 
-    const autosave = async () => {
+    setSaveState("pending");
+
+    const autosaveTimer = window.setTimeout(async () => {
       const autosaved = await handleSave();
       if (!autosaved) {
-        console.error("Autosave failed while exiting edit mode");
-        showToast("Autosave failed while switching to Run mode.");
+        console.error("Autosave failed");
+        showToast("Autosave failed.");
       }
-    };
+    }, AUTOSAVE_DELAY_MS);
 
-    autosave();
-  }, [mode, dirty]);
+    return () => window.clearTimeout(autosaveTimer);
+  }, [dirty, project]);
 
   useEffect(() => {
     if (mode === "run") {
@@ -554,91 +662,126 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
 
   const selectedMic = microphones.find((mic) => mic.id === selectedMicId) ?? null;
   const showPropertiesOverlay = mode === "edit" && Boolean(selectedMic);
+  const isEditMode = mode === "edit";
+  const conferenceTypeLabel =
+    CONFERENCE_TYPE_OPTIONS.find((option) => option.value === conferenceStatus.type)?.label || conferenceStatus.type;
+  const connectionStatusLabel =
+    conferenceStatus.connectionStatus === CONNECTION_STATUS.ONLINE
+      ? "Online"
+      : conferenceStatus.connectionStatus === CONNECTION_STATUS.DEGRADED
+        ? "Degraded"
+        : "Offline";
+  const saveStatusLabel =
+    saveState === "saving"
+      ? "Saving…"
+      : saveState === "pending"
+        ? "Changes pending"
+        : saveState === "error"
+          ? "Save failed"
+          : dirty
+            ? t("status.unsaved")
+            : t("status.saved");
+  const showDeviceIp = conferenceStatus.type !== "virtual" && conferenceStatus.deviceIp;
 
   return (
     <div className="app">
-      <header className="toolbar">
-        <div className="toolbar__group">
-          <span className={`mode-badge mode-badge--${mode}`}>{mode === "edit" ? t("mode.edit") : t("mode.run")}</span>
-          <button
-            type="button"
-            className="button"
-            onClick={() => setMode((prev) => (prev === "edit" ? "run" : "edit"))}
-          >
-            {t("mode.toggle")}
-          </button>
-          <span className="dirty-indicator">{dirty ? t("status.unsaved") : t("status.saved")}</span>
+      <header className="topbar">
+        <div className="topbar__identity">
+          <div>
+            <p className="topbar__eyebrow">Synoptic control</p>
+            <h1 className="topbar__title">Conference overview</h1>
+          </div>
+          <div className="topbar__meta">
+            <span className={`mode-badge mode-badge--${mode}`}>{isEditMode ? t("mode.edit") : t("mode.run")}</span>
+            <span className="status-chip">{conferenceTypeLabel}</span>
+            <span className={`status-chip status-chip--${conferenceStatus.connectionStatus}`}>{connectionStatusLabel}</span>
+          </div>
         </div>
-        <div className="toolbar__group">
-          <span className="dirty-indicator">{t("user.label", { username })}</span>
-          <button type="button" className="button button--secondary" onClick={() => setShowLogs(true)}>
-            {t("toolbar.logs")}
-          </button>
-          <button type="button" className="button button--secondary" onClick={() => setShowSettings(true)}>
-            {t("toolbar.settings")}
-          </button>
-          <button type="button" className="button button--secondary" onClick={() => setShowAbout(true)}>
-            {t("toolbar.about")}
-          </button>
+        <div className="topbar__actions">
+          <span className="topbar__hint">{saveStatusLabel}</span>
           <button
             type="button"
-            className="button button--secondary"
-            onClick={() => {
-              setProject((prev) => ({ ...prev, showLabels: !prev.showLabels }));
-              setDirty(true);
-            }}
+            className={`button ${isEditMode ? "button--warning" : ""}`}
+            onClick={handleModeToggle}
           >
-            {t("toolbar.labels", { state: project.showLabels ? t("common.on") : t("common.off") })}
+            {isEditMode ? "Return to Run" : "Enter Edit"}
           </button>
-          <button
-            type="button"
-            className="button button--secondary"
-            onClick={() => {
-              setProject((prev) => ({
-                ...prev,
-                micSize: clamp(prev.micSize - MIC_SIZE_STEP, MIN_MIC_SIZE, MAX_MIC_SIZE)
-              }));
-              setDirty(true);
-            }}
-          >
-            -
-          </button>
-          <button
-            type="button"
-            className="button button--secondary"
-            onClick={() => {
-              setProject((prev) => ({
-                ...prev,
-                micSize: clamp(prev.micSize + MIC_SIZE_STEP, MIN_MIC_SIZE, MAX_MIC_SIZE)
-              }));
-              setDirty(true);
-            }}
-          >
-            +
-          </button>
+          <details className="menu">
+            <summary className="button button--secondary">Configuration</summary>
+            <div className="menu__panel">
+              <button type="button" className="menu__item" onClick={handleAddMic} disabled={!isEditMode}>
+                {t("toolbar.addMicrophone")}
+              </button>
+              <label className="menu__item menu__item--label">
+                {t("toolbar.uploadBackground")}
+                <input type="file" accept="image/png, image/jpeg" onChange={handleBackgroundUpload} hidden />
+              </label>
+              <button
+                type="button"
+                className="menu__item"
+                onClick={() => {
+                  setProject((prev) => ({ ...prev, showLabels: !prev.showLabels }));
+                  setDirty(true);
+                }}
+              >
+                {t("toolbar.labels", { state: project.showLabels ? t("common.on") : t("common.off") })}
+              </button>
+              <button
+                type="button"
+                className="menu__item"
+                onClick={() => {
+                  setProject((prev) => ({
+                    ...prev,
+                    micSize: clamp(prev.micSize - MIC_SIZE_STEP, MIN_MIC_SIZE, MAX_MIC_SIZE)
+                  }));
+                  setDirty(true);
+                }}
+              >
+                Mic size −
+              </button>
+              <button
+                type="button"
+                className="menu__item"
+                onClick={() => {
+                  setProject((prev) => ({
+                    ...prev,
+                    micSize: clamp(prev.micSize + MIC_SIZE_STEP, MIN_MIC_SIZE, MAX_MIC_SIZE)
+                  }));
+                  setDirty(true);
+                }}
+              >
+                Mic size +
+              </button>
+              <button type="button" className="menu__item" onClick={handleExport}>
+                {t("toolbar.exportZip")}
+              </button>
+              <label className="menu__item menu__item--label">
+                {t("toolbar.importZip")}
+                <input type="file" accept=".zip" onChange={handleImport} hidden />
+              </label>
+            </div>
+          </details>
+          <details className="menu">
+            <summary className="button button--secondary">System</summary>
+            <div className="menu__panel">
+              <button type="button" className="menu__item" onClick={() => setShowLogs(true)}>
+                {t("toolbar.logs")}
+              </button>
+              <button type="button" className="menu__item" onClick={() => setShowSettings(true)}>
+                {t("toolbar.settings")}
+              </button>
+              <button type="button" className="menu__item" onClick={() => setShowAbout(true)}>
+                {t("toolbar.about")}
+              </button>
+            </div>
+          </details>
           <button type="button" className="button button--secondary" onClick={onLogout}>
             {t("toolbar.logout")}
           </button>
         </div>
-        <div className="toolbar__group">
-          <label className="button button--secondary">
-            {t("toolbar.uploadBackground")}
-            <input type="file" accept="image/png, image/jpeg" onChange={handleBackgroundUpload} hidden />
-          </label>
-          <button type="button" className="button" onClick={handleAddMic} disabled={mode !== "edit"}>
-            {t("toolbar.addMicrophone")}
-          </button>
-          <button type="button" className="button" onClick={handleExport}>
-            {t("toolbar.exportZip")}
-          </button>
-          <label className="button button--secondary">
-            {t("toolbar.importZip")}
-            <input type="file" accept=".zip" onChange={handleImport} hidden />
-          </label>
-        </div>
       </header>
       <main className="layout">
-        <section className="canvas-panel">
+        <section className={`canvas-panel ${isEditMode ? "canvas-panel--edit" : ""}`}>
           <div className="canvas-container" ref={containerRef}>
             <Stage width={stageDimensions.width} height={stageDimensions.height}>
               <Layer>
@@ -782,6 +925,24 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
           )}
         </section>
       </main>
+      <footer className="status-bar">
+        <div className="status-bar__group">
+          <span className={`status-chip status-chip--${isEditMode ? "edit" : "run"}`}>
+            {isEditMode ? "EDIT" : "RUN"}
+          </span>
+          <span className="status-bar__item">System: {conferenceTypeLabel}</span>
+          <span className="status-bar__item">User: {username}</span>
+        </div>
+        <div className="status-bar__group">
+          <span className="status-bar__item">IP: {showDeviceIp || "—"}</span>
+          <span className={`status-chip status-chip--${conferenceStatus.connectionStatus}`}>{connectionStatusLabel}</span>
+          <span className="status-bar__item">{conferenceStatus.detail || "Status unavailable"}</span>
+          <span className="status-bar__item">
+            {saveStatusLabel}
+            {saveState === "saved" && lastSavedAt ? ` • ${formatRelativeTime(lastSavedAt)}` : ""}
+          </span>
+        </div>
+      </footer>
       {showLogs && (
         <div className="modal-backdrop" role="presentation" onClick={() => setShowLogs(false)}>
           <div
@@ -829,6 +990,40 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
                     </option>
                   ))}
                 </select>
+              </label>
+              <label className="property-field">
+                <span className="property-label">Conference system</span>
+                <select
+                  className="input"
+                  value={project.conference.type}
+                  onChange={(event) => handleConferenceChange("type", event.target.value)}
+                >
+                  {CONFERENCE_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="property-field">
+                <span className="property-label">Device IP</span>
+                <input
+                  className="input"
+                  type="text"
+                  value={project.conference.deviceIp}
+                  onChange={(event) => handleConferenceChange("deviceIp", event.target.value)}
+                  placeholder={project.conference.type === "virtual" ? "Not used in Virtual mode" : "192.168.1.50"}
+                />
+              </label>
+              <label className="property-field">
+                <span className="property-label">Bind IP</span>
+                <input
+                  className="input"
+                  type="text"
+                  value={project.conference.bindIp}
+                  onChange={(event) => handleConferenceChange("bindIp", event.target.value)}
+                  placeholder="Optional"
+                />
               </label>
               <label className="property-field">
                 <span className="property-label">Mic text font</span>
