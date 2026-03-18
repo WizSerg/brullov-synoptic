@@ -42,6 +42,11 @@ const defaultProject = {
   showLabels: true,
   micSize: 32,
   micButtonStyleCss: "",
+  conference: {
+    type: "virtual",
+    deviceIp: "",
+    bindIp: ""
+  },
   fontSettings: {
     micTextFamily: "system-ui",
     micTextWeight: "bold",
@@ -54,6 +59,8 @@ const MIC_STATE = {
   ON: "ON",
   OFF: "OFF"
 };
+
+const CONFERENCE_TYPES = new Set(["virtual", "dcs100", "dcs150"]);
 
 const microphoneRuntimeStates = new Map();
 const sessionStore = new Map();
@@ -354,7 +361,10 @@ const loadProject = async () => {
   await ensureData();
   const project = await fs.readJson(projectPath);
   const { logs: _legacyLogs, ...projectWithoutLogs } = project;
-  const normalizedProject = await normalizeProjectBackground(projectWithoutLogs);
+  const normalizedProject = await normalizeProjectBackground({
+    ...projectWithoutLogs,
+    conference: normalizeConferenceConfig(projectWithoutLogs.conference)
+  });
   if (JSON.stringify(project) !== JSON.stringify(normalizedProject)) {
     await saveProject(normalizedProject);
   }
@@ -451,6 +461,37 @@ const sanitizeMicrophonesForStorage = (microphones) =>
       buttonStyleCss: typeof mic.buttonStyleCss === "string" ? mic.buttonStyleCss : ""
     };
   }).filter(Boolean);
+
+const normalizeConferenceConfig = (conference) => {
+  const type =
+    typeof conference?.type === "string" && CONFERENCE_TYPES.has(conference.type.toLowerCase())
+      ? conference.type.toLowerCase()
+      : defaultProject.conference.type;
+
+  return {
+    type,
+    deviceIp: typeof conference?.deviceIp === "string" ? conference.deviceIp.trim() : "",
+    bindIp: typeof conference?.bindIp === "string" ? conference.bindIp.trim() : ""
+  };
+};
+
+const getConferenceStatus = (conference) => {
+  const normalized = normalizeConferenceConfig(conference);
+
+  if (normalized.type === "virtual") {
+    return {
+      ...normalized,
+      connectionStatus: "online",
+      detail: "Virtual controller"
+    };
+  }
+
+  return {
+    ...normalized,
+    connectionStatus: "offline",
+    detail: normalized.deviceIp ? "Hardware driver not connected" : "Device IP is not configured"
+  };
+};
 
 const addLog = async (type, details = null) => {
   const entry = {
@@ -575,7 +616,7 @@ app.get("/api/project", requireAuth, async (_req, res) => {
 app.post("/api/project", requireAuth, async (req, res) => {
   const project = await loadProject();
   const { background, microphones } = req.body || {};
-  const { showLabels, micSize, fontSettings, micButtonStyleCss } = req.body || {};
+  const { showLabels, micSize, fontSettings, micButtonStyleCss, conference } = req.body || {};
   if (background !== undefined) {
     project.background = Boolean(background);
     if (!project.background) {
@@ -603,9 +644,17 @@ app.post("/api/project", requireAuth, async (req, res) => {
   if (micButtonStyleCss !== undefined) {
     project.micButtonStyleCss = typeof micButtonStyleCss === "string" ? micButtonStyleCss : "";
   }
+  if (conference !== undefined) {
+    project.conference = normalizeConferenceConfig(conference);
+  }
   await addLog("save", { microphoneCount: project.microphones.length });
   await saveProject(project);
   res.json(withRuntimeMicStates(project));
+});
+
+app.get("/api/conference/status", requireAuth, async (_req, res) => {
+  const project = await loadProject();
+  res.json(getConferenceStatus(project.conference));
 });
 
 app.post("/api/microphones/:id/toggle", requireAuth, async (req, res) => {
@@ -681,7 +730,8 @@ app.post("/api/export", requireAuth, async (req, res) => {
     micSize: req.body?.micSize !== undefined ? req.body.micSize : project.micSize,
     micButtonStyleCss:
       req.body?.micButtonStyleCss !== undefined ? req.body.micButtonStyleCss : project.micButtonStyleCss,
-    fontSettings: req.body?.fontSettings !== undefined ? req.body.fontSettings : project.fontSettings
+    fontSettings: req.body?.fontSettings !== undefined ? req.body.fontSettings : project.fontSettings,
+    conference: normalizeConferenceConfig(req.body?.conference !== undefined ? req.body.conference : project.conference)
   };
 
   res.attachment("project.zip");
@@ -731,6 +781,7 @@ app.post("/api/import", requireAuth, importUpload.single("file"), async (req, re
     ...(project.fontSettings || {})
   };
   project.micButtonStyleCss = typeof project.micButtonStyleCss === "string" ? project.micButtonStyleCss : "";
+  project.conference = normalizeConferenceConfig(project.conference);
 
   let importedBackgroundExt = null;
   let importedBackgroundEntry = null;
