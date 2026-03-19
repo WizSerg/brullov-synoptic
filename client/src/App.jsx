@@ -86,11 +86,14 @@ const normalizeProject = (data) => {
   const microphones = Array.isArray(data.microphones) ? data.microphones : [];
   const normalizedMics = microphones
     .map((mic) => {
-      const normalizedMicId = typeof mic.micId === "string" && mic.micId.trim()
-        ? mic.micId.trim()
-        : typeof mic.id === "string" && mic.id.trim()
-          ? mic.id.trim()
-          : null;
+      const normalizedMicId =
+        (typeof mic.micId === "number" && Number.isInteger(mic.micId) && mic.micId > 0
+          ? String(mic.micId)
+          : typeof mic.micId === "string" && mic.micId.trim()
+            ? mic.micId.trim()
+            : typeof mic.id === "string" && mic.id.trim()
+              ? mic.id.trim()
+              : null);
       if (!normalizedMicId) {
         return null;
       }
@@ -357,12 +360,17 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
   };
 
   const handleAddMic = () => {
+    const maxMicId = microphones.reduce((maxValue, mic) => {
+      const parsed = Number.parseInt(String(mic.micId ?? ""), 10);
+      return Number.isInteger(parsed) ? Math.max(maxValue, parsed) : maxValue;
+    }, 0);
+    const nextMicId = String(maxMicId + 1);
     const newMic = {
       id: crypto.randomUUID(),
       x: 0.5,
       y: 0.5,
-      micId: `mic-${microphones.length + 1}`,
-      micText: `mic-${microphones.length + 1}`,
+      micId: nextMicId,
+      micText: nextMicId,
       label: "",
       sizeScale: 1,
       buttonStyleCss: "",
@@ -489,7 +497,9 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
       const data = await response.json();
       setProject((prev) => ({
         ...prev,
-        microphones: prev.microphones.map((item) => (item.micId === data.id ? { ...item, state: data.state } : item))
+        microphones: prev.microphones.map((item) =>
+          String(item.micId) === String(data.id) ? { ...item, state: data.state } : item
+        )
       }));
       return;
     }
@@ -880,7 +890,9 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
                   <span className="property-label">Mic ID</span>
                   <input
                     className="input"
-                    type="text"
+                    type="number"
+                    min="1"
+                    step="1"
                     value={selectedMic.micId ?? ""}
                     onChange={(event) => handleSelectedMicChange("micId", event.target.value)}
                   />
