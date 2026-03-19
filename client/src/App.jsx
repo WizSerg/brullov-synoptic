@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Stage, Layer, Image as KonvaImage, Circle, Group, Text, Rect } from "react-konva";
 import useImage from "use-image";
 import { languageOptions, translate } from "./i18n";
+import { DEFAULT_CONFERENCE_SETTINGS } from "./conference-config";
+import ConferenceSettingsSection from "./components/ConferenceSettingsSection";
 
 const DEFAULT_PROJECT = {
   background: false,
@@ -37,25 +39,6 @@ const parseMicId = (value) => {
     return null;
   }
   return parsed;
-};
-
-const CONFERENCE_TYPE_OPTIONS = [
-  { value: "virtual", label: "Virtual (simulation)" },
-  { value: "dcs100", label: "DCS100 (TCP)" },
-  { value: "dcs150", label: "DCS150 (UDP)" }
-];
-
-const DEFAULT_CONFERENCE_SETTINGS = {
-  enabled: false,
-  type: "virtual",
-  deviceIp: "",
-  bindIp: "",
-  options: {
-    debug: false,
-    timeoutMs: 1500,
-    healthTimeoutMs: 15000,
-    virtualLatencyMs: 80
-  }
 };
 
 const formatTimestamp = (value) => new Date(value).toLocaleString();
@@ -250,12 +233,12 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
       });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        setConferenceStatusMessage(errorData?.error || "Failed to save conference settings");
+        setConferenceStatusMessage(errorData?.error || t("conference.saveError"));
         return;
       }
       await fetchConferenceSettings();
       await fetchConferenceStatus();
-      setConferenceStatusMessage("Conference settings saved.");
+      setConferenceStatusMessage(t("conference.saveSuccess"));
     } finally {
       setConferenceSaving(false);
     }
@@ -989,118 +972,16 @@ const App = ({ onLogout = () => {}, username = "admin", language = "en", onLangu
                 </select>
               </label>
             </div>
-            <div className="conference-section">
-              <h3>Conference system</h3>
-              <div className="settings-grid">
-                <label className="property-field">
-                  <span className="property-label">Enable integration</span>
-                  <select
-                    className="input"
-                    value={conferenceSettings.enabled ? "yes" : "no"}
-                    onChange={(event) => handleConferenceSettingChange("enabled", event.target.value === "yes")}
-                  >
-                    <option value="no">No</option>
-                    <option value="yes">Yes</option>
-                  </select>
-                </label>
-                <label className="property-field">
-                  <span className="property-label">System type</span>
-                  <select
-                    className="input"
-                    value={conferenceSettings.type}
-                    onChange={(event) => handleConferenceSettingChange("type", event.target.value)}
-                  >
-                    {CONFERENCE_TYPE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="property-field">
-                  <span className="property-label">Device IP</span>
-                  <input
-                    className="input"
-                    value={conferenceSettings.deviceIp || ""}
-                    disabled={conferenceSettings.type === "virtual"}
-                    onChange={(event) => handleConferenceSettingChange("deviceIp", event.target.value)}
-                    placeholder={conferenceSettings.type === "virtual" ? "Not required" : "192.168.1.50"}
-                  />
-                </label>
-                {conferenceSettings.type === "dcs150" && (
-                  <label className="property-field">
-                    <span className="property-label">Bind IP (local)</span>
-                    <input
-                      className="input"
-                      value={conferenceSettings.bindIp || ""}
-                      onChange={(event) => handleConferenceSettingChange("bindIp", event.target.value)}
-                      placeholder="192.168.1.10"
-                    />
-                  </label>
-                )}
-                <label className="property-field">
-                  <span className="property-label">Timeout (ms)</span>
-                  <input
-                    className="input"
-                    type="number"
-                    min={200}
-                    value={conferenceSettings.options?.timeoutMs ?? 1500}
-                    onChange={(event) => handleConferenceOptionChange("timeoutMs", Number(event.target.value) || 1500)}
-                  />
-                </label>
-                {conferenceSettings.type === "dcs150" && (
-                  <label className="property-field">
-                    <span className="property-label">Health timeout (ms)</span>
-                    <input
-                      className="input"
-                      type="number"
-                      min={1000}
-                      value={conferenceSettings.options?.healthTimeoutMs ?? 15000}
-                      onChange={(event) =>
-                        handleConferenceOptionChange("healthTimeoutMs", Number(event.target.value) || 15000)
-                      }
-                    />
-                  </label>
-                )}
-                {conferenceSettings.type === "virtual" && (
-                  <label className="property-field">
-                    <span className="property-label">Virtual latency (ms)</span>
-                    <input
-                      className="input"
-                      type="number"
-                      min={0}
-                      value={conferenceSettings.options?.virtualLatencyMs ?? 80}
-                      onChange={(event) =>
-                        handleConferenceOptionChange("virtualLatencyMs", Number(event.target.value) || 0)
-                      }
-                    />
-                  </label>
-                )}
-                <label className="property-field">
-                  <span className="property-label">Debug driver log</span>
-                  <select
-                    className="input"
-                    value={conferenceSettings.options?.debug ? "yes" : "no"}
-                    onChange={(event) => handleConferenceOptionChange("debug", event.target.value === "yes")}
-                  >
-                    <option value="no">No</option>
-                    <option value="yes">Yes</option>
-                  </select>
-                </label>
-              </div>
-              {conferenceStatus && (
-                <p className="log-empty">
-                  Active: {conferenceStatus.activeDriver || "—"}; health: {conferenceStatus.health?.status || "unknown"}
-                  {conferenceStatus.health?.reason ? ` (${conferenceStatus.health.reason})` : ""}
-                </p>
-              )}
-              {conferenceStatusMessage && <p className="log-empty">{conferenceStatusMessage}</p>}
-              <div className="log-modal__actions">
-                <button type="button" className="button" disabled={conferenceSaving} onClick={saveConferenceSettings}>
-                  {conferenceSaving ? "Saving..." : "Save conference settings"}
-                </button>
-              </div>
-            </div>
+            <ConferenceSettingsSection
+              t={t}
+              settings={conferenceSettings}
+              status={conferenceStatus}
+              statusMessage={conferenceStatusMessage}
+              saving={conferenceSaving}
+              onSettingChange={handleConferenceSettingChange}
+              onOptionChange={handleConferenceOptionChange}
+              onSave={saveConferenceSettings}
+            />
             <form className="password-form" onSubmit={handleChangePassword}>
               <h3>Change password</h3>
               <label className="property-field">

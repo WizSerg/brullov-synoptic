@@ -12,6 +12,12 @@ import { fileURLToPath } from "url";
 import { ConferenceManager } from "./conference/manager.js";
 import { DEFAULT_CONFERENCE_SETTINGS, MIC_STATE } from "./conference/constants.js";
 import { hasDriverType, listDriverTypes } from "./conference/registry.js";
+import {
+  normalizeConferenceSettings,
+  readConferenceSettings,
+  saveConferenceSettings,
+  validateConferenceSettings
+} from "./conference/settings.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -211,56 +217,6 @@ const saveAuthConfig = async (authConfig) => {
   await fs.writeJson(authPath, authConfig, { spaces: 2 });
 };
 
-
-const normalizeConferenceSettings = (settings = {}) => ({
-  enabled: Boolean(settings.enabled),
-  type: typeof settings.type === "string" ? settings.type : DEFAULT_CONFERENCE_SETTINGS.type,
-  deviceIp: typeof settings.deviceIp === "string" ? settings.deviceIp.trim() : "",
-  bindIp: typeof settings.bindIp === "string" ? settings.bindIp.trim() : "",
-  options: {
-    ...DEFAULT_CONFERENCE_SETTINGS.options,
-    ...(settings.options || {})
-  }
-});
-
-const readConferenceSettings = async () => {
-  await ensureData();
-  const settings = await fs.readJson(conferenceSettingsPath);
-  return normalizeConferenceSettings(settings);
-};
-
-const saveConferenceSettings = async (settings) => {
-  await fs.writeJson(conferenceSettingsPath, normalizeConferenceSettings(settings), { spaces: 2 });
-};
-
-const isValidIpv4 = (value) => {
-  if (typeof value !== "string") {
-    return false;
-  }
-  const parts = value.split(".");
-  if (parts.length !== 4) {
-    return false;
-  }
-  return parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
-};
-
-const validateConferenceSettings = (settings) => {
-  if (!hasDriverType(settings.type)) {
-    return `Unsupported conference type: ${settings.type}. Available: ${listDriverTypes().join(", ")}`;
-  }
-
-  if (!settings.enabled) {
-    return null;
-  }
-
-  if (settings.type !== "virtual" && !isValidIpv4(settings.deviceIp)) {
-    return "Invalid conference deviceIp";
-  }
-  if (settings.type === "dcs150" && !isValidIpv4(settings.bindIp)) {
-    return "Invalid conference bindIp for dcs150";
-  }
-  return null;
-};
 
 const rotateLogsIfNeeded = async (incomingEntryBytes) => {
   if (!(await fs.pathExists(appLogPath))) {
@@ -658,23 +614,23 @@ app.post("/api/change-password", requireAuth, async (req, res) => {
 });
 
 app.get("/api/conference/settings", requireAuth, async (_req, res) => {
-  const settings = await readConferenceSettings();
+  const settings = await readConferenceSettings(fs, conferenceSettingsPath);
   res.json(settings);
 });
 
 app.post("/api/conference/settings", requireAuth, async (req, res) => {
   const nextSettings = normalizeConferenceSettings(req.body || {});
-  const validationError = validateConferenceSettings(nextSettings);
+  const validationError = validateConferenceSettings(nextSettings, { hasDriverType, listDriverTypes });
   if (validationError) {
     res.status(400).json({ error: validationError });
     return;
   }
 
-  const previousSettings = await readConferenceSettings();
+  const previousSettings = await readConferenceSettings(fs, conferenceSettingsPath);
 
   try {
     await conferenceManager.switchConfig(nextSettings);
-    await saveConferenceSettings(nextSettings);
+    await saveConferenceSettings(fs, conferenceSettingsPath, nextSettings);
   } catch (error) {
     try {
       await conferenceManager.switchConfig(previousSettings);
@@ -1032,13 +988,13 @@ if (process.env.NODE_ENV === "production") {
 
 const bootstrapConference = async () => {
   await ensureData();
-  const settings = await readConferenceSettings();
+  const settings = await readConferenceSettings(fs, conferenceSettingsPath);
   if (!settings.enabled) {
     await conferenceManager.switchConfig(settings);
     return;
   }
 
-  const validationError = validateConferenceSettings(settings);
+  const validationError = validateConferenceSettings(settings, { hasDriverType, listDriverTypes });
   if (validationError) {
     await addLog("conference_settings_invalid", { error: validationError, settings });
     await conferenceManager.switchConfig({ ...settings, enabled: false });

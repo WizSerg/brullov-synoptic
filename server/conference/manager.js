@@ -15,33 +15,50 @@ export class ConferenceManager extends EventEmitter {
 
   bindDriver(driver) {
     driver.on("micState", async (event) => {
+      if (this.driver !== driver) {
+        return;
+      }
       await this.onMicStateChange(event);
       this.emit("micState", event);
     });
 
     driver.on("health", async (event) => {
+      if (this.driver !== driver) {
+        return;
+      }
       this.health = event;
       await this.onHealth(event);
       this.emit("health", event);
     });
 
     driver.on("error", (event) => {
+      if (this.driver !== driver) {
+        return;
+      }
       this.emit("error", event);
     });
   }
 
   async switchConfig(config) {
     const nextDriver = !config?.enabled ? createDriverByType("noop") : createDriverByType(config.type);
-    this.bindDriver(nextDriver);
-
-    await nextDriver.start(config || {});
-
     const previousDriver = this.driver;
-    this.driver = nextDriver;
-    this.config = config;
 
-    if (previousDriver) {
-      await previousDriver.stop();
+    this.bindDriver(nextDriver);
+    this.driver = nextDriver;
+
+    try {
+      await nextDriver.start(config || {});
+      this.config = config;
+
+      if (previousDriver && previousDriver !== nextDriver) {
+        await previousDriver.stop();
+      }
+    } catch (error) {
+      this.driver = previousDriver;
+      if (nextDriver !== previousDriver) {
+        await nextDriver.stop().catch(() => {});
+      }
+      throw error;
     }
   }
 
